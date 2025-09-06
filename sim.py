@@ -1,0 +1,281 @@
+import pygame
+import math
+
+pygame.init()
+
+SCREEN_WIDTH = 1200
+SCREEN_HEIGHT = 800
+FPS = 60
+SCALE = 30  # pixels per meter
+
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
+RED = (255, 0, 0)
+BLUE = (0, 0, 255)
+GREEN = (0, 255, 0)
+GRAY = (50, 50, 50)
+LIGHT_GRAY = (128, 128, 128)
+YELLOW = (255, 255, 0)
+ORANGE = (255, 165, 0)
+
+class Vehicle:
+    def __init__(self, x=0, y=0):
+        # Vehicle parameters in meters
+        self.wheelbase = 2.5  # L
+        self.track_width = 1.8  # w
+        self.length = 4.0
+        self.width = 2.0
+
+        self.max_speed = 5.0  # m/s
+        self.throttle_acceleration = 2.0  # m/s^2
+        self.steering_rate = math.radians(45) # rad/s
+
+        # TODO: steering system parameters
+        # parameters go here
+
+        # State variables
+        self.x = x
+        self.y = y
+        self.heading = 0.0  # radians
+        self.speed = 0.0  # m/s
+        # assuming bicycle model with 100% ackermann
+        self.steering_angle = 0.0  # radians
+
+        self.max_steering_angle = self.calculate_max_steering_angle()
+
+    def update(self, dt, speed_input, steer_input):
+        """Update vehicle state w/ bicycle model"""
+
+        # update speed based on throttle input
+        self.speed = max(-self.max_speed, min(self.max_speed, self.speed + speed_input * self.throttle_acceleration * dt))
+        if speed_input < 1e-6:
+            # natural deceleration
+            self.speed *= 0.98
+
+        # update effective steering angle based on steering input
+        self.steering_angle = max(-self.max_steering_angle, min(self.max_steering_angle, self.steering_angle + steer_input * self.steering_rate * dt))
+
+        # update position and heading
+        if abs(self.steering_angle) > 1e-6:
+            turning_radius = self.wheelbase / math.tan(self.steering_angle)
+            angular_velocity = self.speed / turning_radius
+        else: angular_velocity = 0
+
+        # Calculate heading
+        self.heading += angular_velocity * dt
+        # Normalize heading to be within -pi to pi
+        self.heading = (self.heading + math.pi) % (2 * math.pi) - math.pi
+
+        self.x += self.speed * math.cos(self.heading) * dt
+        self.y += self.speed * math.sin(self.heading) * dt
+
+    def get_corners(self):
+        """Returns the world coordinates of the four corners of the vehicle."""
+        half_length = self.length / 2
+        half_width = self.width / 2
+
+        # Corners in local vehicle frame (front-left, front-right, back-right, back-left)
+        local_corners = [
+            (half_length, half_width),
+            (half_length, -half_width),
+            (-half_length, -half_width),
+            (-half_length, half_width)
+        ]
+
+        # Rotate and translate corners to world frame
+        world_corners = []
+        for x_local, y_local in local_corners:
+            x_world = self.x + x_local * math.cos(self.heading) - y_local * math.sin(self.heading)
+            y_world = self.y + x_local * math.sin(self.heading) + y_local * math.cos(self.heading)
+            world_corners.append((x_world, y_world))
+
+        return world_corners
+    def calculate_max_steering_angle(self):
+        """
+        Calculate maximum steering angle from rack & pinion geometry.
+        This is the maximum angle a wheel can turn, NOT the maximum effective steering angle
+        (though the two should be close)
+        """
+        # TODO: derive max steering angle
+        return math.radians(30) # conservative placeholder
+
+class Obstacle:
+    def __init__(self,x,y):
+        self.x = x
+        self.y = y
+        self.color = ORANGE
+
+    def draw(self, screen, world_to_screen_func):
+        """Each obstacle subclass must implement its own drawing method."""
+        raise NotImplementedError
+
+    def check_collision(self, vehicle_corners):
+        """Each obstacle subclass must implement its own collision logic."""
+        raise NotImplementedError
+
+class CircleObstacle(Obstacle):
+    def __init__(self, x, y, radius):
+        super().__init__(x, y)
+        self.radius = radius
+
+    def draw(self, screen, world_to_screen_func):
+        screen_pos = world_to_screen_func(self.x, self.y)
+        pygame.draw.circle(screen, self.color, screen_pos, int(self.radius * SCALE))
+
+    # TODO check this (feels a little wrong when driving)
+    def check_collision(self, vehicle_corners):
+        # Simple circle-rectangle collision detection
+        closest_x = max(min(self.x, max(c[0] for c in vehicle_corners)), min(c[0] for c in vehicle_corners))
+        closest_y = max(min(self.y, max(c[1] for c in vehicle_corners)), min(c[1] for c in vehicle_corners))
+        distance_x = self.x - closest_x
+        distance_y = self.y - closest_y
+        distance_squared = distance_x**2 + distance_y**2
+        return distance_squared < (self.radius ** 2)
+
+class CollisionDetector:
+    def __init__(self):
+        self.tolerance = 0
+
+    def check_collision(self,vehicle_corners,obstacles):
+        """Check if vehicle collides with any obstacle"""
+        colliding_obstacles = []
+        for obs in obstacles:
+            if obs.check_collision(vehicle_corners):
+                colliding_obstacles.append(obs)
+        return colliding_obstacles
+
+class Simulator:
+    def __init__(self):
+        self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+        pygame.display.set_caption("Vehicle Simulator")
+        self.clock = pygame.time.Clock()
+        self.font = pygame.font.SysFont("monospace", 18)
+        self.vehicle = Vehicle(0, 0)
+
+        self.obstacles = [
+            CircleObstacle(10, 5, 1.5),
+            CircleObstacle(-5, 10, 2.0),
+            CircleObstacle(15, -8, 3.0),
+        ]
+        self.collision_detector = CollisionDetector()
+        self.is_colliding = False
+
+        self.camera_x = 0
+        self.camera_y = 0
+
+        # TODO: add collision detector
+        # self.collision_detector = CollisionDetector()
+
+    def handle_input(self):
+        """Interpret user input"""
+        keys = pygame.key.get_pressed()
+
+        # ternary throttle (forward, backward, no throttle)
+        speed_input = 0
+        if keys[pygame.K_w]:
+            speed_input = 1
+        elif keys[pygame.K_s]:
+            speed_input = -1
+        else:
+            speed_input = 0
+
+        # move steering wheel left, right, or keep it in place
+        steer_input = 0
+        if keys[pygame.K_a]:
+            steer_input = 1
+        elif keys[pygame.K_d]:
+            steer_input = -1
+        else:
+            steer_input = 0
+
+        # TODO: add keys to change car dimensions (or have them be input at start of program?)
+
+        return speed_input, steer_input
+
+    def world_to_screen(self, x, y):
+        """Converts world coordinates (meters) to screen coordinates (pixels)."""
+        screen_x = int((x - self.camera_x) * SCALE + SCREEN_WIDTH / 2)
+        # Invert y-axis for Pygame's coordinate system
+        screen_y = int(-(y - self.camera_y) * SCALE + SCREEN_HEIGHT / 2)
+        return screen_x, screen_y
+
+    def draw_grid(self):
+        """Draws a grid on the screen for reference."""
+        grid_size = 50 # meters
+        for i in range(-grid_size, grid_size + 1):
+            # Vertical lines
+            start_pos = self.world_to_screen(i, -grid_size)
+            end_pos = self.world_to_screen(i, grid_size)
+            pygame.draw.line(self.screen, LIGHT_GRAY, start_pos, end_pos, 1)
+            # Horizontal lines
+            start_pos = self.world_to_screen(-grid_size, i)
+            end_pos = self.world_to_screen(grid_size, i)
+            pygame.draw.line(self.screen, LIGHT_GRAY, start_pos, end_pos, 1)
+
+    def draw_vehicle(self):
+        """Draws the vehicle as a polygon."""
+        corners = self.vehicle.get_corners()
+        screen_corners = [self.world_to_screen(x, y) for x, y in corners]
+        vehicle_color = RED if self.is_colliding else BLUE
+        pygame.draw.polygon(self.screen, vehicle_color, screen_corners)
+        # Draw a line to indicate the front of the vehicle
+        front_mid_x = (corners[0][0] + corners[1][0]) / 2
+        front_mid_y = (corners[0][1] + corners[1][1]) / 2
+        center_screen = self.world_to_screen(self.vehicle.x, self.vehicle.y)
+        front_screen = self.world_to_screen(front_mid_x, front_mid_y)
+        pygame.draw.line(self.screen, YELLOW, center_screen, front_screen, 3)
+
+    def draw_obstacles(self):
+        for obs in self.obstacles:
+            obs.draw(self.screen,self.world_to_screen)
+
+    def draw_hud(self):
+        """Displays vehicle state information on the screen."""
+        speed_kmh = self.vehicle.speed * 3.6
+        steer_deg = math.degrees(self.vehicle.steering_angle)
+
+        info = [
+            f"Speed: {speed_kmh:.1f} km/h",
+            f"Steering: {steer_deg:.1f} degrees",
+            f"Position: ({self.vehicle.x:.1f}, {self.vehicle.y:.1f}) m",
+            f"Heading: {math.degrees(self.vehicle.heading):.1f} degrees"
+        ]
+
+        for i, line in enumerate(info):
+            text_surface = self.font.render(line, True, WHITE)
+            self.screen.blit(text_surface, (10, 10 + i * 25))
+
+
+    def run(self):
+        """Main simulation loop"""
+        running = True
+        dt = 1.0 / FPS
+
+        while running:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+
+            speed_input, steer_input = self.handle_input()
+            self.vehicle.update(dt,speed_input,steer_input)
+
+            colliding_obstacles = self.collision_detector.check_collision(self.vehicle.get_corners(), self.obstacles)
+            self.is_colliding = len(colliding_obstacles) > 0
+
+            self.camera_x = self.vehicle.x
+            self.camera_y = self.vehicle.y
+
+            # Rendering
+            self.screen.fill(GRAY)
+            self.draw_grid()
+            self.draw_vehicle()
+            self.draw_hud()
+            self.draw_obstacles()
+
+            pygame.display.flip()
+            self.clock.tick(FPS)
+        pygame.quit()
+
+if __name__ == "__main__":
+    simulator = Simulator()
+    simulator.run()
