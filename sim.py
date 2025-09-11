@@ -6,12 +6,13 @@ pygame.init()
 SCREEN_WIDTH = 1200
 SCREEN_HEIGHT = 800
 FPS = 60
-SCALE = 30  # pixels per meter
+SCALE = 110  # pixels per meter
 
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
 RED = (255, 0, 0)
 BLUE = (0, 0, 255)
+LIGHT_BLUE = (0, 128, 255)
 GREEN = (0, 255, 0)
 GRAY = (50, 50, 50)
 LIGHT_GRAY = (128, 128, 128)
@@ -21,10 +22,10 @@ ORANGE = (255, 165, 0)
 class Vehicle:
     def __init__(self, x=0, y=0):
         # Vehicle parameters in meters
-        self.wheelbase = 2.5  # L
-        self.track_width = 1.8  # w
-        self.length = 4.0
-        self.width = 2.0
+        self.wheelbase = 0.9144  # L
+        self.track_width = 0.6096  # w
+        self.length = 0.9144 # 3 feet in meters
+        self.width = 0.6096 # 2 feet in meters
 
         self.max_speed = 5.0  # m/s
         self.throttle_acceleration = 2.0  # m/s^2
@@ -53,8 +54,10 @@ class Vehicle:
             self.speed *= 0.98
 
         # update effective steering angle based on steering input
-        self.steering_angle = max(-self.max_steering_angle, min(self.max_steering_angle, self.steering_angle + steer_input * self.steering_rate * dt))
-
+        if steer_input != 0:
+            self.steering_angle = max(-self.max_steering_angle, min(self.max_steering_angle, self.steering_angle + steer_input * self.steering_rate * dt))
+        else:
+            self.steering_angle = self.steering_angle * 0.9 # natural return to center
         # update position and heading
         if abs(self.steering_angle) > 1e-6:
             turning_radius = self.wheelbase / math.tan(self.steering_angle)
@@ -122,7 +125,7 @@ class CircleObstacle(Obstacle):
         screen_pos = world_to_screen_func(self.x, self.y)
         pygame.draw.circle(screen, self.color, screen_pos, int(self.radius * SCALE))
 
-    # TODO check this (feels a little wrong when driving)
+    # TODO fix this
     def check_collision(self, vehicle_corners):
         # Simple circle-rectangle collision detection
         closest_x = max(min(self.x, max(c[0] for c in vehicle_corners)), min(c[0] for c in vehicle_corners))
@@ -153,18 +156,17 @@ class Simulator:
         self.vehicle = Vehicle(0, 0)
 
         self.obstacles = [
-            CircleObstacle(10, 5, 1.5),
-            CircleObstacle(-5, 10, 2.0),
-            CircleObstacle(15, -8, 3.0),
+            CircleObstacle(10, 5, 0.4572), # 18 inches in meters
+            CircleObstacle(-5, 10, 0.4572),
+            CircleObstacle(15, -8, 0.4572),
+            # another obstacle next to that one to test collision
+            CircleObstacle(15, -10, 0.4572),
         ]
         self.collision_detector = CollisionDetector()
         self.is_colliding = False
 
         self.camera_x = 0
         self.camera_y = 0
-
-        # TODO: add collision detector
-        # self.collision_detector = CollisionDetector()
 
     def handle_input(self):
         """Interpret user input"""
@@ -212,11 +214,31 @@ class Simulator:
             end_pos = self.world_to_screen(grid_size, i)
             pygame.draw.line(self.screen, LIGHT_GRAY, start_pos, end_pos, 1)
 
+    def draw_wheel(self, center_x, center_y, width, length, wheel_angle):
+        """Draws a single wheel as a rectangle"""
+        half_length = length / 2
+        half_width = width / 2
+
+        unrotated_corners = [
+            (-half_length, -half_width),
+            (-half_length, half_width),
+            (half_length, half_width),
+            (half_length, -half_width),
+        ]
+        world_corners = []
+        for x_local, y_local in unrotated_corners:
+            x_world = center_x + x_local * math.cos(wheel_angle) - y_local * math.sin(wheel_angle)
+            y_world = center_y + x_local * math.sin(wheel_angle) + y_local * math.cos(wheel_angle)
+            world_corners.append((x_world, y_world))
+
+        screen_corners = [self.world_to_screen(x, y) for x, y in world_corners]
+        pygame.draw.polygon(self.screen, BLACK, screen_corners)
+
     def draw_vehicle(self):
         """Draws the vehicle as a polygon."""
         corners = self.vehicle.get_corners()
         screen_corners = [self.world_to_screen(x, y) for x, y in corners]
-        vehicle_color = RED if self.is_colliding else BLUE
+        vehicle_color = RED if self.is_colliding else LIGHT_BLUE
         pygame.draw.polygon(self.screen, vehicle_color, screen_corners)
         # Draw a line to indicate the front of the vehicle
         front_mid_x = (corners[0][0] + corners[1][0]) / 2
@@ -225,6 +247,25 @@ class Simulator:
         front_screen = self.world_to_screen(front_mid_x, front_mid_y)
         pygame.draw.line(self.screen, YELLOW, center_screen, front_screen, 3)
 
+        # draw wheels of the vehicle
+        wheel_width = 0.07 # meters
+        wheel_length = 0.2 # meters
+        half_wheelbase = self.vehicle.wheelbase / 2
+        half_track = self.vehicle.track_width / 2
+        # Back wheels (left and right) - aligned with vehicle heading
+        for side in [-1, 1]:  # left = 1, right = -1
+            back_wheel_x = self.vehicle.x - half_wheelbase * math.cos(self.vehicle.heading) + side * half_track * math.cos(self.vehicle.heading + math.pi/2)
+            back_wheel_y = self.vehicle.y - half_wheelbase * math.sin(self.vehicle.heading) + side * half_track * math.sin(self.vehicle.heading + math.pi/2)
+            self.draw_wheel(back_wheel_x, back_wheel_y, wheel_width, wheel_length, self.vehicle.heading)
+
+        # derivation from https://www.mathworks.com/help/vdynblks/ref/steeringsystem.html
+        right_wheel_angle = math.atan((self.vehicle.wheelbase*math.tan(self.vehicle.steering_angle))/(self.vehicle.wheelbase + (self.vehicle.track_width/2)*math.tan(self.vehicle.steering_angle)))
+        left_wheel_angle = math.atan((self.vehicle.wheelbase*math.tan(self.vehicle.steering_angle))/(self.vehicle.wheelbase - (self.vehicle.track_width/2)*math.tan(self.vehicle.steering_angle)))
+        # Front wheels (left and right) - turned by steering angle
+        for side, wheel_angle in zip([-1, 1], [right_wheel_angle, left_wheel_angle]):
+            front_wheel_x = self.vehicle.x + half_wheelbase * math.cos(self.vehicle.heading) + side * half_track * math.cos(self.vehicle.heading + math.pi/2)
+            front_wheel_y = self.vehicle.y + half_wheelbase * math.sin(self.vehicle.heading) + side * half_track * math.sin(self.vehicle.heading + math.pi/2)
+            self.draw_wheel(front_wheel_x, front_wheel_y, wheel_width, wheel_length, self.vehicle.heading + wheel_angle)
     def draw_obstacles(self):
         for obs in self.obstacles:
             obs.draw(self.screen,self.world_to_screen)
