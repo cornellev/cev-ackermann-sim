@@ -1,23 +1,9 @@
 import pygame
 import math
+from objects import CircleObstacle, CollisionDetector
+from constants import SCALE, SCREEN_WIDTH, SCREEN_HEIGHT, LIGHT_GRAY, LIGHT_BLUE, BLACK, RED, YELLOW, WHITE, FPS, GRAY
 
 pygame.init()
-
-SCREEN_WIDTH = 1200
-SCREEN_HEIGHT = 800
-FPS = 60
-SCALE = 110  # pixels per meter
-
-WHITE = (255, 255, 255)
-BLACK = (0, 0, 0)
-RED = (255, 0, 0)
-BLUE = (0, 0, 255)
-LIGHT_BLUE = (0, 128, 255)
-GREEN = (0, 255, 0)
-GRAY = (50, 50, 50)
-LIGHT_GRAY = (128, 128, 128)
-YELLOW = (255, 255, 0)
-ORANGE = (255, 165, 0)
 
 class Vehicle:
     def __init__(self, x=0, y=0):
@@ -101,51 +87,6 @@ class Vehicle:
         """
         # TODO: derive max steering angle
         return math.radians(30) # conservative placeholder
-
-class Obstacle:
-    def __init__(self,x,y):
-        self.x = x
-        self.y = y
-        self.color = ORANGE
-
-    def draw(self, screen, world_to_screen_func):
-        """Each obstacle subclass must implement its own drawing method."""
-        raise NotImplementedError
-
-    def check_collision(self, vehicle_corners):
-        """Each obstacle subclass must implement its own collision logic."""
-        raise NotImplementedError
-
-class CircleObstacle(Obstacle):
-    def __init__(self, x, y, radius):
-        super().__init__(x, y)
-        self.radius = radius
-
-    def draw(self, screen, world_to_screen_func):
-        screen_pos = world_to_screen_func(self.x, self.y)
-        pygame.draw.circle(screen, self.color, screen_pos, int(self.radius * SCALE))
-
-    # TODO fix this
-    def check_collision(self, vehicle_corners):
-        # Simple circle-rectangle collision detection
-        closest_x = max(min(self.x, max(c[0] for c in vehicle_corners)), min(c[0] for c in vehicle_corners))
-        closest_y = max(min(self.y, max(c[1] for c in vehicle_corners)), min(c[1] for c in vehicle_corners))
-        distance_x = self.x - closest_x
-        distance_y = self.y - closest_y
-        distance_squared = distance_x**2 + distance_y**2
-        return distance_squared < (self.radius ** 2)
-
-class CollisionDetector:
-    def __init__(self):
-        self.tolerance = 0
-
-    def check_collision(self,vehicle_corners,obstacles):
-        """Check if vehicle collides with any obstacle"""
-        colliding_obstacles = []
-        for obs in obstacles:
-            if obs.check_collision(vehicle_corners):
-                colliding_obstacles.append(obs)
-        return colliding_obstacles
 
 class Simulator:
     def __init__(self):
