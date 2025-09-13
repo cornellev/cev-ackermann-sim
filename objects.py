@@ -45,7 +45,6 @@ class CircleObstacle(Obstacle):
         screen_pos = world_to_screen_func(self.x, self.y)
         pygame.draw.circle(screen, self.color, screen_pos, int(self.radius * SCALE))
 
-    # TODO fix this
     def check_collision(self, vehicle_corners):
         vehicle_sides = [(vehicle_corners[i], vehicle_corners[(i+1)%4]) for i in range(4)]
         for p1,p2 in vehicle_sides:
