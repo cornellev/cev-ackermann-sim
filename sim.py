@@ -1,6 +1,6 @@
 import pygame
 import math
-from objects import CircleObstacle, CollisionDetector
+from objects import CircleObstacle, CollisionDetector, PolygonObstacle, LineObstacle
 from constants import SCALE, SCREEN_WIDTH, SCREEN_HEIGHT, LIGHT_GRAY, LIGHT_BLUE, BLACK, RED, YELLOW, WHITE, FPS, GRAY
 
 pygame.init()
@@ -97,11 +97,32 @@ class Simulator:
         self.vehicle = Vehicle(0, 0)
 
         self.obstacles = [
-            CircleObstacle(10, 5, 0.4572), # 18 inches in meters
-            CircleObstacle(-5, 10, 0.4572),
-            CircleObstacle(15, -8, 0.4572),
-            # another obstacle next to that one to test collision
-            CircleObstacle(15, -10, 0.4572),
+            # CircleObstacle(10, 5, 0.4572), # 18 inches in meters (this is a cone)
+            # CircleObstacle(-5, 10, 0.4572),
+            # CircleObstacle(15, -8, 0.4572),
+            # # another obstacle next to that one to test collision
+            # CircleObstacle(15, -10, 0.4572),
+            # # big cube for testing
+            # # PolygonObstacle([(-3, -3), (-1, -3), (-1, -1), (-3, -1)], (255, 165, 0)),
+            # # 2 road lines of thickess 0.15m from (-10,0) to (10,0) 10 feet wide
+            # LineObstacle((-10, 0.75), (10, 0.75), 0.15),
+            # LineObstacle((-10, -0.75), (10, -0.75), 0.15)
+            #
+            # make two cones one above another
+            CircleObstacle(10, 5, 0.4572), # 18 inches in meters (this is a cone)
+            CircleObstacle(10, 6.2, 0.4572),
+            CircleObstacle(13.5, 5.2, 0.4572),
+            CircleObstacle(13.5, 6, 0.4572),
+            CircleObstacle(13.5, 7, 0.4572),
+
+            CircleObstacle(16, 4.5, 0.4572),
+            CircleObstacle(16, 3.5, 0.4572),
+
+            # make a road line directly above the top cones
+            LineObstacle((-10, 7.75), (20, 7.75), 0.15),
+
+
+
         ]
         self.collision_detector = CollisionDetector()
         self.is_colliding = False
