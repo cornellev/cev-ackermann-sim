@@ -1,7 +1,11 @@
 import pygame
 import math
+import rclpy
+from rclpy.node import Node
+from geometry_msgs.msg import Pose2D
 from objects import CircleObstacle, CollisionDetector, PolygonObstacle, LineObstacle
 from constants import SCALE, SCREEN_WIDTH, SCREEN_HEIGHT, LIGHT_GRAY, LIGHT_BLUE, BLACK, RED, YELLOW, WHITE, FPS, GRAY
+from sim_publisher import VehiclePublisher
 
 pygame.init()
 
@@ -129,6 +133,8 @@ class Simulator:
 
         self.camera_x = 0
         self.camera_y = 0
+        self.ros2_node = rclpy.create_node('simulator_node')
+        self.pose_publisher = VehiclePublisher()
 
     def handle_input(self):
         """Interpret user input"""
