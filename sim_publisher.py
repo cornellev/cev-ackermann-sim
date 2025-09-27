@@ -2,6 +2,7 @@ import math
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped
+from cev_msgs.msg import Waypoint
 
 
 def yaw_to_quaternion(yaw: float):
@@ -13,9 +14,10 @@ def yaw_to_quaternion(yaw: float):
 class VehiclePublisher(Node):
     def __init__(self):
         super().__init__('sim_publisher')
-        self.publisher_ = self.create_publisher(PoseStamped, 'sim_pose', 10)
+        self.pose_publisher_ = self.create_publisher(PoseStamped, 'sim_pose', 10)
+        self.state_publisher_ = self.create_publisher(Waypoint, 'sim_state', 10)
 
-    def publish_pose(self, x, y, theta):
+    def publish_pose(self, x, y, theta, v, steering_angle):
         msg = PoseStamped()
         # Header
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -33,5 +35,16 @@ class VehiclePublisher(Node):
         msg.pose.orientation.z = qz
         msg.pose.orientation.w = qw
 
-        self.publisher_.publish(msg)
+        self.pose_publisher_.publish(msg)
         self.get_logger().info(f'Published sim pose stamped: x={x}, y={y}, theta={theta}')
+
+        # publish Waypoint
+        w = Waypoint()
+        w.x = float(x)
+        w.y = float(y)
+        w.v = float(v)
+        w.tau = float(steering_angle)
+        w.theta = float(theta)
+        self.state_publisher_.publish(w)
+        self.get_logger().info(f'Published sim state: x={x}, y={y}, v={v}, tau={steering_angle}, theta={theta}')
+

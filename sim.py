@@ -113,14 +113,14 @@ class Simulator:
             # LineObstacle((-10, -0.75), (10, -0.75), 0.15)
             #
             # make two cones one above another
-            CircleObstacle(10, 5, 0.4572), # 18 inches in meters (this is a cone)
-            CircleObstacle(10, 6.2, 0.4572),
-            CircleObstacle(13.5, 5.2, 0.4572),
-            CircleObstacle(13.5, 6, 0.4572),
-            CircleObstacle(13.5, 7, 0.4572),
+            CircleObstacle(2, 5, 0.4572), # 18 inches in meters (this is a cone)
+            CircleObstacle(2, 6.2, 0.4572),
+            CircleObstacle(5.5, 5.2, 0.4572),
+            CircleObstacle(5.5, 6, 0.4572),
+            CircleObstacle(5.5, 7, 0.4572),
 
-            CircleObstacle(16, 4.5, 0.4572),
-            CircleObstacle(16, 3.5, 0.4572),
+            CircleObstacle(8, 4.5, 0.4572),
+            CircleObstacle(8, 3.5, 0.4572),
 
             # make a road line directly above the top cones
             LineObstacle((-10, 7.75), (20, 7.75), 0.15),
@@ -281,7 +281,7 @@ class Simulator:
             now = pygame.time.get_ticks() / 1000.0
             if now - self._last_publish_time >= self.publish_interval:
                 try:
-                    self.pose_publisher.publish_pose(self.vehicle.x, self.vehicle.y, self.vehicle.heading)
+                    self.pose_publisher.publish_pose(self.vehicle.x, self.vehicle.y, self.vehicle.heading, self.vehicle.speed, self.vehicle.steering_angle)
                 except Exception as e:
                     print(f"Failed to publish pose: {e}")
                 self._last_publish_time = now
