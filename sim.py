@@ -2,7 +2,6 @@ import pygame
 import math
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import Pose2D
 from objects import CircleObstacle, CollisionDetector, PolygonObstacle, LineObstacle
 from constants import SCALE, SCREEN_WIDTH, SCREEN_HEIGHT, LIGHT_GRAY, LIGHT_BLUE, BLACK, RED, YELLOW, WHITE, FPS, GRAY
 from sim_publisher import VehiclePublisher
@@ -94,6 +93,7 @@ class Vehicle:
 
 class Simulator:
     def __init__(self):
+        rclpy.init()
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         pygame.display.set_caption("Vehicle Simulator")
         self.clock = pygame.time.Clock()
@@ -133,8 +133,11 @@ class Simulator:
 
         self.camera_x = 0
         self.camera_y = 0
-        self.ros2_node = rclpy.create_node('simulator_node')
+
         self.pose_publisher = VehiclePublisher()
+
+        self.publish_interval = 0.1
+        self._last_publish_time = pygame.time.get_ticks() / 1000.0
 
     def handle_input(self):
         """Interpret user input"""
@@ -274,6 +277,15 @@ class Simulator:
             self.camera_x = self.vehicle.x
             self.camera_y = self.vehicle.y
 
+            # Periodically publish the simulated pose
+            now = pygame.time.get_ticks() / 1000.0
+            if now - self._last_publish_time >= self.publish_interval:
+                try:
+                    self.pose_publisher.publish_pose(self.vehicle.x, self.vehicle.y, self.vehicle.heading)
+                except Exception as e:
+                    print(f"Failed to publish pose: {e}")
+                self._last_publish_time = now
+
             # Rendering
             self.screen.fill(GRAY)
             self.draw_grid()
@@ -284,6 +296,14 @@ class Simulator:
             pygame.display.flip()
             self.clock.tick(FPS)
         pygame.quit()
+        try:
+            self.pose_publisher.destroy_node()
+        except Exception:
+            pass
+        try:
+            rclpy.shutdown()
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     simulator = Simulator()
