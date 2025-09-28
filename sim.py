@@ -124,7 +124,7 @@ class Simulator:
 
             # make a road line directly above the top cones
             LineObstacle((-10, 7.75), (20, 7.75), 0.15),
-
+            LineObstacle((-10, 2.75), (20, 2.75), 0.15),
 
 
         ]
@@ -135,6 +135,11 @@ class Simulator:
         self.camera_y = 0
 
         self.pose_publisher = VehiclePublisher()
+
+        try:
+            self.pose_publisher.publish_occupancy_grid(self.obstacles, width_m=30.0, height_m=30.0, resolution=0.1)
+        except Exception as e:
+            print(f"Failed to publish initial occupancy grid: {e}")
 
         self.publish_interval = 0.1
         self._last_publish_time = pygame.time.get_ticks() / 1000.0
