@@ -1,7 +1,10 @@
 import pygame
 import math
+import rclpy
+from rclpy.node import Node
 from objects import CircleObstacle, CollisionDetector, PolygonObstacle, LineObstacle
 from constants import SCALE, SCREEN_WIDTH, SCREEN_HEIGHT, LIGHT_GRAY, LIGHT_BLUE, BLACK, RED, YELLOW, WHITE, FPS, GRAY
+from sim_publisher import VehiclePublisher
 
 pygame.init()
 
@@ -90,6 +93,7 @@ class Vehicle:
 
 class Simulator:
     def __init__(self):
+        rclpy.init()
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         pygame.display.set_caption("Vehicle Simulator")
         self.clock = pygame.time.Clock()
@@ -109,18 +113,18 @@ class Simulator:
             # LineObstacle((-10, -0.75), (10, -0.75), 0.15)
             #
             # make two cones one above another
-            CircleObstacle(10, 5, 0.4572), # 18 inches in meters (this is a cone)
-            CircleObstacle(10, 6.2, 0.4572),
-            CircleObstacle(13.5, 5.2, 0.4572),
-            CircleObstacle(13.5, 6, 0.4572),
-            CircleObstacle(13.5, 7, 0.4572),
+            CircleObstacle(2, 5, 0.4572), # 18 inches in meters (this is a cone)
+            CircleObstacle(2, 6.2, 0.4572),
+            CircleObstacle(5.5, 5.2, 0.4572),
+            CircleObstacle(5.5, 6, 0.4572),
+            CircleObstacle(5.5, 7, 0.4572),
 
-            CircleObstacle(16, 4.5, 0.4572),
-            CircleObstacle(16, 3.5, 0.4572),
+            CircleObstacle(8, 4.5, 0.4572),
+            CircleObstacle(8, 3.5, 0.4572),
 
             # make a road line directly above the top cones
             LineObstacle((-10, 7.75), (20, 7.75), 0.15),
-
+            LineObstacle((-10, 2.75), (20, 2.75), 0.15),
 
 
         ]
@@ -129,6 +133,16 @@ class Simulator:
 
         self.camera_x = 0
         self.camera_y = 0
+
+        self.pose_publisher = VehiclePublisher()
+
+        try:
+            self.pose_publisher.publish_occupancy_grid(self.obstacles, width_m=30.0, height_m=30.0, resolution=0.1)
+        except Exception as e:
+            print(f"Failed to publish initial occupancy grid: {e}")
+
+        self.publish_interval = 0.1
+        self._last_publish_time = pygame.time.get_ticks() / 1000.0
 
     def handle_input(self):
         """Interpret user input"""
@@ -268,6 +282,15 @@ class Simulator:
             self.camera_x = self.vehicle.x
             self.camera_y = self.vehicle.y
 
+            # Periodically publish the simulated pose
+            now = pygame.time.get_ticks() / 1000.0
+            if now - self._last_publish_time >= self.publish_interval:
+                try:
+                    self.pose_publisher.publish_pose(self.vehicle.x, self.vehicle.y, self.vehicle.heading, self.vehicle.speed, self.vehicle.steering_angle)
+                except Exception as e:
+                    print(f"Failed to publish pose: {e}")
+                self._last_publish_time = now
+
             # Rendering
             self.screen.fill(GRAY)
             self.draw_grid()
@@ -278,6 +301,14 @@ class Simulator:
             pygame.display.flip()
             self.clock.tick(FPS)
         pygame.quit()
+        try:
+            self.pose_publisher.destroy_node()
+        except Exception:
+            pass
+        try:
+            rclpy.shutdown()
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     simulator = Simulator()
