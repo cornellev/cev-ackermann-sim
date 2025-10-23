@@ -1,4 +1,7 @@
 Usage:
+source install/setup.bash
+cd src
+cd cev-ackermann-sim
 python3 sim.py
 
 ROS RViz:
