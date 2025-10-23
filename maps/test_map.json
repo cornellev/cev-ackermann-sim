@@ -1,0 +1,13 @@
+{
+  "start": {
+    "x": 0,
+    "y": 0,
+    "theta": 0
+  },
+  "goal": {
+    "x": 1,
+    "y": 1,
+    "theta": 0
+  },
+  "obstacles": []
+}
