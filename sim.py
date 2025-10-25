@@ -3,7 +3,6 @@ import math
 import os
 import json
 import rclpy
-import atexit
 from rclpy.node import Node
 from objects import CircleObstacle, CollisionDetector, PolygonObstacle, LineObstacle
 from obstacle_loader import load_obstacles_from_json
@@ -11,27 +10,7 @@ from constants import *
 from sim_publisher import VehiclePublisher
 from cev_msgs.msg import Trajectory as CevTrajectory
 from sim_edit import SceneEditor
-from draw_utils import *
-
-try:
-    # Workaround for some rclpy versions where SingleThreadedExecutor.__del__
-    # accesses an attribute that may be removed during interpreter shutdown.
-    import rclpy.executors as _rclpy_executors
-    _orig_del = getattr(_rclpy_executors.SingleThreadedExecutor, '__del__', None)
-    def _safe_executor_del(self):
-        try:
-            if _orig_del:
-                _orig_del(self)
-        except AttributeError:
-            pass
-    _rclpy_executors.SingleThreadedExecutor.__del__ = _safe_executor_del
-except Exception:
-    pass
-
-# Colors
-RED = (255, 0, 0)
-BLACK = (0, 0, 0)
-WHITE = (255, 255, 255)
+from draw import *
 
 pygame.init()
 
@@ -120,21 +99,7 @@ class Vehicle:
 
 class Simulator:
     def __init__(self, scene_arg: str = None):
-        # Initialize ROS node
-        self.node_initialized = False
-        try:
-            rclpy.init()
-            self.node_initialized = True
-            # Ensure rclpy is shutdown on process exit to avoid destructor warnings
-            def _safe_rclpy_shutdown():
-                try:
-                    rclpy.shutdown()
-                except Exception:
-                    pass
-            atexit.register(_safe_rclpy_shutdown)
-        except Exception:
-            print("Warning: Failed to initialize ROS node")
-
+        rclpy.init()
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         pygame.display.set_caption("Vehicle Simulator")
         self.clock = pygame.time.Clock()
@@ -154,7 +119,7 @@ class Simulator:
         self.show_map_controls = True  # Toggle for dropdown/edit visibility
         
         # Initialize publisher before loading maps
-        self.pose_publisher = VehiclePublisher() if self.node_initialized else None
+        self.pose_publisher = VehiclePublisher()
         
         # load scene from config if available (obstacles, start, goal)
         self.vehicle = Vehicle()
@@ -455,9 +420,9 @@ class Simulator:
         self.show_map_controls = not self.edit_mode
         
         if self.edit_mode:
-            # Initialize editor in embedded mode
+            # Initialize editor
             map_path = os.path.join(self.maps_dir, self.current_map) if self.current_map and self.current_map != "New Map" else None
-            self.editor = SceneEditor(scene_path=map_path, embedded=True)
+            self.editor = SceneEditor(scene_path=map_path)
             # Share screen with editor
             self.editor.screen = self.screen
             # Sync editor state with current sim state
@@ -537,9 +502,6 @@ class Simulator:
         while running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
-                    if self.node_initialized:
-                        self.pose_publisher.destroy_node()
-                        rclpy.shutdown()
                     running = False
                     
                 elif event.type == pygame.MOUSEBUTTONDOWN:
@@ -550,16 +512,17 @@ class Simulator:
                             
                         if self.edit_mode:
                             pos = event.pos
-                            # Check Return button (top-right) if present
+
+                            # Return button (top-right)
                             if hasattr(self.editor, 'return_rect') and self.editor.return_rect.collidepoint(pos):
                                 self.toggle_editor()
                                 continue
-                            # If editor has a save_rect and it's clicked, toggle save input
+
+                            # Save button handling: toggle input or perform save
                             if hasattr(self.editor, 'save_rect') and self.editor.save_rect.collidepoint(pos):
                                 if not self.editor.save_text_active:
                                     self.editor.save_text_active = True
                                 else:
-                                    # if already active and there's text, perform save
                                     if self.editor.save_text:
                                         filename = self.editor.save_text if self.editor.save_text.endswith('.json') else f"{self.editor.save_text}.json"
                                         map_path = os.path.join(self.maps_dir, filename)
@@ -576,19 +539,18 @@ class Simulator:
                                             self.current_map = filename
                                             self.available_maps = self.scan_maps_directory()
                                 continue
-                            else:
-                                # Clicking elsewhere should hide text input
-                                self.editor.save_text_active = False
-                            
-                            # Pass event to editor
+
+                            # Clicking elsewhere should hide text input
+                            self.editor.save_text_active = False
+
+                            # Pass the click to the editor toolbox / map
                             mx, my = event.pos
-                            # Check toolbox
                             for tool, rect in self.editor.toolbox_rects.items():
                                 if rect.collidepoint(mx, my):
                                     self.editor.selected_tool = tool
                                     break
                             else:
-                                # Handle tool actions
+                                # Map click: handle tool actions
                                 wx, wy = self.editor.screen_to_world(mx, my)
                                 if self.editor.selected_tool == 'circle':
                                     self.editor.obstacles.append(CircleObstacle(wx, wy, self.editor.obstacle_size))
@@ -596,11 +558,9 @@ class Simulator:
                                     if self.editor.line_start is None:
                                         self.editor.line_start = (wx, wy)
                                     else:
-                                        self.editor.obstacles.append(LineObstacle(
-                                            self.editor.line_start, (wx, wy), self.editor.obstacle_size))
+                                        self.editor.obstacles.append(LineObstacle(self.editor.line_start, (wx, wy), self.editor.obstacle_size))
                                         self.editor.line_start = None
                                 elif self.editor.selected_tool == 'polygon':
-                                    # Check if clicking near start point to close polygon
                                     if len(self.editor.temp_polygon) >= 3:
                                         start_x, start_y = self.editor.temp_polygon[0]
                                         if self.editor.is_near_point(wx, wy, start_x, start_y):
@@ -800,26 +760,18 @@ class Simulator:
                 # Draw simulation view
                 self.draw_grid()
                 self.draw_vehicle()
-                from draw_utils import draw_hud, draw_planner_trajectory
-                draw_hud(self.screen, self)
+                self.draw_hud()
                 self.draw_obstacles()
                 self.draw_targets()
-                draw_planner_trajectory(self.screen, self)
+                self.draw_planner_trajectory()
                 
-            from draw_utils import draw_map_selector
             draw_map_selector(self.screen, self)  # Always show map selector
 
             pygame.display.flip()
             self.clock.tick(FPS)
         pygame.quit()
-        try:
-            self.pose_publisher.destroy_node()
-        except Exception:
-            pass
-        try:
-            rclpy.shutdown()
-        except Exception:
-            pass
+        self.pose_publisher.destroy_node()
+        rclpy.shutdown()
 
 if __name__ == "__main__":
     simulator = Simulator()
