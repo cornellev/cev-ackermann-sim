@@ -280,11 +280,7 @@ def draw_planner_trajectory(surface, sim):
     position to transform waypoints into screen coordinates.
     """
     try:
-        traj_msg = None
-        if getattr(sim, 'active_trajectory', None) is not None:
-            traj_msg = sim.active_trajectory
-        else:
-            traj_msg = getattr(sim.pose_publisher, 'latest_trajectory_msg', None)
+        traj_msg = getattr(sim.pose_publisher, 'latest_trajectory_msg', None)
     except Exception:
         traj_msg = None
 

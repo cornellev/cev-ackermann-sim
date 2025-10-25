@@ -3,12 +3,10 @@ import math
 import os
 import json
 import rclpy
-from rclpy.node import Node
 from objects import CircleObstacle, CollisionDetector, PolygonObstacle, LineObstacle
 from obstacle_loader import load_obstacles_from_json
 from constants import *
 from sim_publisher import VehiclePublisher
-from cev_msgs.msg import Trajectory as CevTrajectory
 from sim_edit import SceneEditor
 from draw import *
 
@@ -649,19 +647,17 @@ class Simulator:
                         continue
                     if event.key == pygame.K_SPACE and not self.edit_mode:
                         self.follow_planner = not self.follow_planner
-                        if self.follow_planner:
-                            try:
-                                traj_msg = self.pose_publisher.latest_trajectory_msg
-                            except Exception:
-                                traj_msg = None
-                            
-                            if traj_msg is not None:
-                                self.active_trajectory = traj_msg
-                                self.active_traj_stamp = traj_msg.header.stamp
-                                self.traj_index = 0
+                        # Log status about follower presence when toggling follow mode
+                        try:
+                            if self.follow_planner:
+                                if self.pose_publisher.is_follower_connected():
+                                    self.pose_publisher.get_logger().info('Follow mode enabled and external follower appears connected')
+                                else:
+                                    self.pose_publisher.get_logger().info('Follow mode enabled but no external follower detected (manual control remains)')
                             else:
-                                self.active_trajectory = None
-                                self.traj_index = 0
+                                self.pose_publisher.get_logger().info('Follow mode disabled; manual control active')
+                        except Exception:
+                            pass
                     elif event.key == pygame.K_ESCAPE and self.edit_mode:
                         # Cancel current tool operation
                         self.editor.temp_polygon = []
@@ -678,52 +674,47 @@ class Simulator:
             except Exception:
                 traj_msg = None
 
-            if self.follow_planner and traj_msg is not None:
-                if self.active_trajectory is None or traj_msg is not None and getattr(traj_msg, 'header', None) is not None and (self.active_trajectory is None or traj_msg.header.stamp != self.active_traj_stamp):
-                    self.active_trajectory = traj_msg
-                    self.active_traj_stamp = traj_msg.header.stamp
-                    self.traj_index = 0
+            if self.follow_planner:
+                # When follow_planner is enabled, the simulator accepts external
+                # AckermannDrive commands from an external follower. If such a
+                # command is present, it overrides keyboard inputs. If not,
+                # manual keyboard driving remains active (do not attempt internal
+                # trajectory following).
+                latest_ack = None
+                try:
+                    latest_ack = self.pose_publisher.get_latest_ack()
+                except Exception:
+                    latest_ack = None
 
-                if self.active_trajectory is not None and len(self.active_trajectory.waypoints) > 0 and self.traj_index < len(self.active_trajectory.waypoints):
-                    wp = self.active_trajectory.waypoints[self.traj_index]
-                    tx = wp.x
-                    ty = wp.y
-                    tv = wp.v
-
-                    dx = tx - self.vehicle.x
-                    dy = ty - self.vehicle.y
-                    dist = math.hypot(dx, dy)
-
-                    desired_heading = math.atan2(dy, dx)
-                    heading_error = (desired_heading - self.vehicle.heading + math.pi) % (2 * math.pi) - math.pi
-
-                    kp = 1.0
-                    desired_steer = max(-self.vehicle.max_steering_angle, min(self.vehicle.max_steering_angle, kp * heading_error))
-                    steer_delta = desired_steer - self.vehicle.steering_angle
-                    if abs(steer_delta) < 1e-3:
-                        steer_input = 0
+                if latest_ack is not None:
+                    # Only accept ack commands if they are recent (avoid stale control).
+                    age = None
+                    try:
+                        age = self.pose_publisher.ack_age_seconds()
+                    except Exception:
+                        age = None
+                    if age is not None and age > 1.0:
+                        # message too old; ignore
+                        try:
+                            self.pose_publisher.get_logger().info(f'Ignoring stale AckermannDrive (age={age:.2f}s)')
+                        except Exception:
+                            pass
                     else:
-                        steer_input = max(-1.0, min(1.0, steer_delta / (self.vehicle.steering_rate * dt)))
-
-                    if tv is None:
-                        tv = self.vehicle.max_speed * 0.5
-                    if dist < 1.0:
-                        speed_scale = 0.3
-                    else:
-                        speed_scale = 1.0
-
-                    desired_speed = max(-self.vehicle.max_speed, min(self.vehicle.max_speed, tv))
-                    speed_delta = desired_speed - self.vehicle.speed
+                        # Map AckermannDrive -> simulator control inputs
+                        target_speed = getattr(latest_ack, 'speed', 0.0)
+                    speed_delta = target_speed - self.vehicle.speed
                     if abs(speed_delta) < 1e-3:
                         speed_input = 0
                     else:
-                        speed_input = max(-1.0, min(1.0, (speed_delta / self.vehicle.throttle_acceleration) / dt)) * speed_scale
+                        speed_input = max(-1.0, min(1.0, speed_delta / (self.vehicle.throttle_acceleration * dt)))
 
-                    if dist < 0.5:
-                        self.traj_index += 1
-                else:
-                    self.active_trajectory = None
-                    self.traj_index = 0
+                        desired_steer = getattr(latest_ack, 'steering_angle', 0.0)
+                        steer_delta = desired_steer - self.vehicle.steering_angle
+                        if abs(steer_delta) < 1e-3:
+                            steer_input = 0
+                        else:
+                            steer_input = max(-1.0, min(1.0, steer_delta / (self.vehicle.steering_rate * dt)))
+                # else: no external command -> keep keyboard inputs (manual driving)
 
             self.vehicle.update(dt,speed_input,steer_input)
 

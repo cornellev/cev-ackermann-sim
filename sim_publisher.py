@@ -1,5 +1,5 @@
 import math
-import rclpy
+import time
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
 from geometry_msgs.msg import PoseStamped, TransformStamped
@@ -70,6 +70,22 @@ class VehiclePublisher(Node):
         except Exception:
             # If message isn't available or subscriber can't be created, ignore
             self.get_logger().warning('Could not create trajectory subscriber; simulator will not follow planner')
+        # Subscription to external follower drive commands (ackermann).
+        # Import AckermannDrive at runtime so this module can be imported before
+        # the ackermann_msgs Python package is available (e.g., during initial colcon build).
+        self.latest_ack_msg = None
+        self.ack_sub_exists = False
+        self._last_ack_time = None
+        try:
+            from ackermann_msgs.msg import AckermannDrive
+            try:
+                self.ack_sub = self.create_subscription(AckermannDrive, 'rc_movement_msg', self._ack_callback, 10)
+                self.ack_sub_exists = True
+            except Exception:
+                self.get_logger().warning('Could not create ackermann subscriber; simulator will not accept external drive commands')
+        except Exception:
+            # ackermann_msgs not yet available; continue without ack subscription
+            self.get_logger().debug('ackermann_msgs not available at import time; skipping ack subscription')
         # Publisher for target waypoint that planner listens to
         try:
             self.target_publisher_ = self.create_publisher(Waypoint, 'target', 10)
@@ -205,6 +221,37 @@ class VehiclePublisher(Node):
         # store last received trajectory message for simulator to consume
         self.latest_trajectory_msg = msg
         self.get_logger().info('Received trajectory from planner')
+
+    def _ack_callback(self, msg):
+        # Store last ackermann drive message from external follower
+        try:
+            self.latest_ack_msg = msg
+            # store a wall-clock timestamp so callers can know how recent the message is
+            try:
+                self._last_ack_time = time.time()
+            except Exception:
+                self._last_ack_time = None
+            self.get_logger().info('Received AckermannDrive from external follower')
+        except Exception:
+            pass
+
+    def get_latest_ack(self):
+        return self.latest_ack_msg
+
+    def ack_age_seconds(self):
+        """Return age in seconds of last received ack message, or None if unknown."""
+        try:
+            if getattr(self, '_last_ack_time', None) is None:
+                return None
+            return time.time() - self._last_ack_time
+        except Exception:
+            return None
+
+    def is_follower_connected(self) -> bool:
+        """Return True if an ack subscriber was created or we have recently received an ack message."""
+        if getattr(self, 'ack_sub_exists', False):
+            return True
+        return self.latest_ack_msg is not None
 
     def publish_target(self, x: float, y: float, v: float = 0.0, tau: float = 0.0, theta: float = 0.0):
         try:
