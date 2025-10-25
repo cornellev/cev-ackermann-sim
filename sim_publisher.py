@@ -224,28 +224,19 @@ class VehiclePublisher(Node):
 
     def _ack_callback(self, msg):
         # Store last ackermann drive message from external follower
-        try:
-            self.latest_ack_msg = msg
+        self.latest_ack_msg = msg
             # store a wall-clock timestamp so callers can know how recent the message is
-            try:
-                self._last_ack_time = time.time()
-            except Exception:
-                self._last_ack_time = None
-            self.get_logger().info('Received AckermannDrive from external follower')
-        except Exception:
-            pass
+        self._last_ack_time = time.time()
+        self.get_logger().info('Received AckermannDrive from external follower')
 
     def get_latest_ack(self):
         return self.latest_ack_msg
 
     def ack_age_seconds(self):
         """Return age in seconds of last received ack message, or None if unknown."""
-        try:
-            if getattr(self, '_last_ack_time', None) is None:
-                return None
-            return time.time() - self._last_ack_time
-        except Exception:
+        if getattr(self, '_last_ack_time', None) is None:
             return None
+        return time.time() - self._last_ack_time
 
     def is_follower_connected(self) -> bool:
         """Return True if an ack subscriber was created or we have recently received an ack message."""
