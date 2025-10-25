@@ -28,13 +28,7 @@ import json
 from typing import List, Union
 
 from objects import CircleObstacle, PolygonObstacle, LineObstacle
-
-def _validate_color(col):
-    if col is None:
-        return None
-    if (not isinstance(col, (list, tuple))) or len(col) != 3:
-        raise ValueError(f"color must be a 3-element RGB list, got: {col}")
-    return tuple(int(max(0, min(255, c))) for c in col)
+from constants import *
 
 def load_obstacles_from_json(data: Union[str, dict]) -> List[object]:
     """Load obstacles from a JSON file path or a dict.
@@ -61,7 +55,7 @@ def load_obstacles_from_json(data: Union[str, dict]) -> List[object]:
             x = float(item.get('x'))
             y = float(item.get('y'))
             r = float(item.get('radius'))
-            color = _validate_color(item.get('color'))
+            color = item.get('color')
             obs = CircleObstacle(x, y, r)
             if color is not None:
                 obs.color = color
@@ -71,7 +65,7 @@ def load_obstacles_from_json(data: Union[str, dict]) -> List[object]:
             if not isinstance(verts, list) or len(verts) < 3:
                 raise ValueError(f"polygon obstacle at index {i} requires 'vertices' list of length>=3")
             verts = [(float(v[0]), float(v[1])) for v in verts]
-            color = _validate_color(item.get('color')) or (255, 165, 0)
+            color = item.get('color') or ORANGE
             obs = PolygonObstacle(verts, color)
             obstacles.append(obs)
         elif t == 'line':
@@ -82,7 +76,7 @@ def load_obstacles_from_json(data: Union[str, dict]) -> List[object]:
                 raise ValueError(f"line obstacle at index {i} requires 'start' and 'end' arrays")
             start = (float(start[0]), float(start[1]))
             end = (float(end[0]), float(end[1]))
-            color = _validate_color(item.get('color')) or (255, 255, 255)
+            color = item.get('color') or WHITE
             obs = LineObstacle(start, end, width, color)
             obstacles.append(obs)
         else:
@@ -91,14 +85,5 @@ def load_obstacles_from_json(data: Union[str, dict]) -> List[object]:
     return obstacles
 
 
-if __name__ == '__main__':
-    # Demo: load a sample JSON and print a summary
-    sample = {
-        "obstacles": [
-            {"type": "circle", "x": 2.0, "y": 1.5, "radius": 0.3},
-            {"type": "polygon", "vertices": [[0,0],[1,0],[1,1]], "color": [0,128,255]},
-            {"type": "line", "start": [0,2], "end": [3,2], "width": 0.1}
-        ]
-    }
-    obs = load_obstacles_from_json(sample)
-    print(f"Loaded {len(obs)} obstacles: {[type(o).__name__ for o in obs]}")
+# Note: This module is not intended to be executed as a script. Import
+# `load_obstacles_from_json` from other modules instead.

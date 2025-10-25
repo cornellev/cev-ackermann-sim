@@ -1,7 +1,7 @@
 import pygame
 from pygame.draw import circle
 
-from constants import SCALE
+from constants import SCALE, ORANGE, WHITE
 
 def circle_line_collision(circle_center, radius, p1, p2):
     """Check if circle collides with line segment p1-p2."""
@@ -92,11 +92,15 @@ class Obstacle:
     def check_collision(self, vehicle_corners):
         """Each obstacle subclass must implement its own collision logic."""
         raise NotImplementedError
+        
+    def to_dict(self):
+        """Each obstacle subclass must implement its own serialization."""
+        raise NotImplementedError
 
 class CircleObstacle(Obstacle):
     def __init__(self, x, y, radius):
         super().__init__()
-        self.color = (255, 165, 0)
+        self.color = ORANGE
         self.x = x
         self.y = y
         self.radius = radius
@@ -111,6 +115,9 @@ class CircleObstacle(Obstacle):
             if circle_line_collision((self.x,self.y),self.radius, p1,p2):
                 return True
         return False
+        
+    def to_dict(self):
+        return {'type': 'circle', 'x': self.x, 'y': self.y, 'radius': self.radius}
 
 class PolygonObstacle(Obstacle):
     def __init__(self, vertices, color):
@@ -130,9 +137,12 @@ class PolygonObstacle(Obstacle):
                 if lines_intersect(p1,p2,q1,q2):
                     return True
         return False
+        
+    def to_dict(self):
+        return {'type': 'polygon', 'vertices': self.vertices, 'color': self.color}
 
 class LineObstacle(PolygonObstacle):
-    def __init__(self, start, end, width, color=(255,255,255)):
+    def __init__(self, start, end, width, color=WHITE):
         # Create a rectangle representing the line with given width
         dx = end[0] - start[0]
         dy = end[1] - start[1]

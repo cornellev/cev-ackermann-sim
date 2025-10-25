@@ -194,122 +194,7 @@ class Simulator:
 
         return speed_input, steer_input
 
-    def world_to_screen(self, x, y):
-        return world_to_screen(x, y, self.camera_x, self.camera_y)
-
-    def draw_grid(self):
-        draw_grid(self.screen, self.camera_x, self.camera_y)
-
-    def draw_wheel(self, center_x, center_y, width, length, wheel_angle):
-        """Draws a single wheel as a rectangle"""
-        half_length = length / 2
-        half_width = width / 2
-
-        unrotated_corners = [
-            (-half_length, -half_width),
-            (-half_length, half_width),
-            (half_length, half_width),
-            (half_length, -half_width),
-        ]
-        world_corners = []
-        for x_local, y_local in unrotated_corners:
-            x_world = center_x + x_local * math.cos(wheel_angle) - y_local * math.sin(wheel_angle)
-            y_world = center_y + x_local * math.sin(wheel_angle) + y_local * math.cos(wheel_angle)
-            world_corners.append((x_world, y_world))
-
-        screen_corners = [self.world_to_screen(x, y) for x, y in world_corners]
-        pygame.draw.polygon(self.screen, BLACK, screen_corners)
-
-    def draw_vehicle(self):
-        """Draws the vehicle as a polygon."""
-        corners = self.vehicle.get_corners()
-        screen_corners = [self.world_to_screen(x, y) for x, y in corners]
-        vehicle_color = RED if self.is_colliding else LIGHT_BLUE
-        pygame.draw.polygon(self.screen, vehicle_color, screen_corners)
-        # Draw a line to indicate the front of the vehicle
-        front_mid_x = (corners[0][0] + corners[1][0]) / 2
-        front_mid_y = (corners[0][1] + corners[1][1]) / 2
-        center_screen = self.world_to_screen(self.vehicle.x, self.vehicle.y)
-        front_screen = self.world_to_screen(front_mid_x, front_mid_y)
-        pygame.draw.line(self.screen, YELLOW, center_screen, front_screen, 3)
-
-        # draw wheels of the vehicle
-        wheel_width = 0.07 # meters
-        wheel_length = 0.2 # meters
-        half_wheelbase = self.vehicle.wheelbase / 2
-        half_track = self.vehicle.track_width / 2
-        # Back wheels (left and right) - aligned with vehicle heading
-        for side in [-1, 1]:  # left = 1, right = -1
-            back_wheel_x = self.vehicle.x - half_wheelbase * math.cos(self.vehicle.heading) + side * half_track * math.cos(self.vehicle.heading + math.pi/2)
-            back_wheel_y = self.vehicle.y - half_wheelbase * math.sin(self.vehicle.heading) + side * half_track * math.sin(self.vehicle.heading + math.pi/2)
-            self.draw_wheel(back_wheel_x, back_wheel_y, wheel_width, wheel_length, self.vehicle.heading)
-
-        # derivation from https://www.mathworks.com/help/vdynblks/ref/steeringsystem.html
-        right_wheel_angle = math.atan((self.vehicle.wheelbase*math.tan(self.vehicle.steering_angle))/(self.vehicle.wheelbase + (self.vehicle.track_width/2)*math.tan(self.vehicle.steering_angle)))
-        left_wheel_angle = math.atan((self.vehicle.wheelbase*math.tan(self.vehicle.steering_angle))/(self.vehicle.wheelbase - (self.vehicle.track_width/2)*math.tan(self.vehicle.steering_angle)))
-        # Front wheels (left and right) - turned by steering angle
-        for side, wheel_angle in zip([-1, 1], [right_wheel_angle, left_wheel_angle]):
-            front_wheel_x = self.vehicle.x + half_wheelbase * math.cos(self.vehicle.heading) + side * half_track * math.cos(self.vehicle.heading + math.pi/2)
-            front_wheel_y = self.vehicle.y + half_wheelbase * math.sin(self.vehicle.heading) + side * half_track * math.sin(self.vehicle.heading + math.pi/2)
-            self.draw_wheel(front_wheel_x, front_wheel_y, wheel_width, wheel_length, self.vehicle.heading + wheel_angle)
-    def draw_obstacles(self):
-        draw_obstacles(self.screen, self.obstacles, self.camera_x, self.camera_y)
-
-    def draw_hud(self):
-        """Displays vehicle state information on the screen."""
-        speed_kmh = self.vehicle.speed * 3.6
-        steer_deg = math.degrees(self.vehicle.steering_angle)
-
-        info = [
-            f"Speed: {speed_kmh:.1f} km/h",
-            f"Steering: {steer_deg:.1f} degrees",
-            f"Position: ({self.vehicle.x:.1f}, {self.vehicle.y:.1f}) m",
-            f"Heading: {math.degrees(self.vehicle.heading):.1f} degrees"
-        ]
-
-        for i, line in enumerate(info):
-            text_surface = self.font.render(line, True, WHITE)
-            self.screen.blit(text_surface, (10, 10 + i * 25))
-        
-        # added rendering for following
-        follow_text = f"Follow planner: {'ON' if self.follow_planner else 'OFF'}"
-        follow_surface = self.font.render(follow_text, True, (0, 255, 0) if self.follow_planner else (255, 100, 100))
-        self.screen.blit(follow_surface, (10, 10 + len(info) * 25))
-    
-    def draw_targets(self):
-        draw_start_goal(self.screen, self.start_pose, self.target_pose, self.camera_x, self.camera_y)
-
-    # this is probably really really slow but I'll worry about that later
-    def draw_map_selector(self):
-        """Draw the map selector dropdown and edit button"""
-        if not self.show_map_controls:
-            return
-            
-        # Draw dropdown button
-        pygame.draw.rect(self.screen, (200, 200, 200), self.dropdown_rect)
-        # Remove .json from display name
-        name = self.current_map.replace('.json', '') if self.current_map else "Select Map"
-        text = self.font.render(name[:18], True, (0, 0, 0))
-        self.screen.blit(text, (self.dropdown_rect.x + 5, self.dropdown_rect.y + 5))
-        
-        # Draw dropdown list if open
-        if self.dropdown_open:
-            y = self.dropdown_rect.bottom
-            for map_name in self.available_maps + ["New Map"]:
-                r = pygame.Rect(self.dropdown_rect.x, y, self.dropdown_rect.width, 30)
-                pygame.draw.rect(self.screen, (255, 255, 255), r)
-                pygame.draw.rect(self.screen, (180, 180, 180), r, 1)
-                # Remove .json from display name
-                display_name = map_name.replace('.json', '') if map_name != "New Map" else map_name
-                text = self.font.render(display_name[:18], True, (0, 0, 0))
-                self.screen.blit(text, (r.x + 5, r.y + 5))
-                y += 30
-                
-        # Draw edit button
-        pygame.draw.rect(self.screen, (100, 149, 237), self.edit_button_rect)
-        text = self.font.render("Edit", True, (255, 255, 255))
-        text_rect = text.get_rect(center=self.edit_button_rect.center)
-        self.screen.blit(text, text_rect)
+    # Drawing is centralized in draw.py. Simulator keeps state and updates only.
         
     def handle_map_selector_click(self, pos):
         """Handle clicks on map selector UI elements"""
@@ -337,16 +222,8 @@ class Simulator:
             
         return False
         
-    def draw_editor_grid(self):
-        # Use shared draw_grid for editor
-        self.editor.screen = self.screen
-        draw_grid(self.screen, self.editor.camera_x, self.editor.camera_y)
-            
-    def world_to_screen(self, x, y):
-        return world_to_screen(x, y, self.camera_x, self.camera_y)
-        
-    def screen_to_world(self, sx, sy):
-        return screen_to_world(sx, sy, self.camera_x, self.camera_y)
+    # Editor grid rendering is handled in draw.draw_toolbox / editor.draw which are
+    # called from the render loop; keep sim.py focused on state only.
         
     def scan_maps_directory(self):
         """Get list of available map files"""
@@ -425,6 +302,10 @@ class Simulator:
             self.editor = SceneEditor(scene_path=map_path)
             # Share screen with editor
             self.editor.screen = self.screen
+            # If editing an existing map, pre-fill the inline save textbox with its name (without extension)
+            if self.current_map and self.current_map != "New Map":
+                name = os.path.splitext(self.current_map)[0]
+                self.editor.save_text = name
             # Sync editor state with current sim state
             self.editor.obstacles = self.obstacles.copy()
             self.editor.camera_x = self.vehicle.x
@@ -456,42 +337,6 @@ class Simulator:
             # Update map list
             self.available_maps = self.scan_maps_directory()
 
-    def draw_planner_trajectory(self):
-        """Draw the latest planner trajectory (or active trajectory) as a yellow polyline with waypoint markers."""
-        try:
-            traj_msg = None
-            if getattr(self, 'active_trajectory', None) is not None:
-                traj_msg = self.active_trajectory
-            else:
-                traj_msg = getattr(self.pose_publisher, 'latest_trajectory_msg', None)
-        except Exception:
-            traj_msg = None
-
-        if traj_msg is None:
-            return
-
-        points = []
-        try:
-            for wp in traj_msg.waypoints:
-                points.append(self.world_to_screen(wp.x, wp.y))
-        except Exception:
-            return
-
-        if len(points) == 0:
-            return
-
-        try:
-            pygame.draw.lines(self.screen, YELLOW, False, points, 2)
-        except Exception:
-            pass
-
-        for p in points:
-            try:
-                pygame.draw.circle(self.screen, YELLOW, p, 4)
-            except Exception:
-                pass
-
-
     def run(self):
         """Main simulation loop"""
         running = True
@@ -506,13 +351,10 @@ class Simulator:
                     
                 elif event.type == pygame.MOUSEBUTTONDOWN:
                     if event.button == 1:  # Left click
-                        # Always check map selector first
-                        if self.handle_map_selector_click(event.pos):
-                            continue
-                            
-                        if self.edit_mode:
-                            pos = event.pos
+                        pos = event.pos
 
+                        # If in edit mode, first allow editor to handle top-right controls
+                        if self.edit_mode:
                             # Return button (top-right)
                             if hasattr(self.editor, 'return_rect') and self.editor.return_rect.collidepoint(pos):
                                 self.toggle_editor()
@@ -520,8 +362,21 @@ class Simulator:
 
                             # Save button handling: toggle input or perform save
                             if hasattr(self.editor, 'save_rect') and self.editor.save_rect.collidepoint(pos):
+                                # Toggle text-entry for map name, or save if already active.
                                 if not self.editor.save_text_active:
+                                    # activate text entry
                                     self.editor.save_text_active = True
+                                    # enable faster key repeat for smoother backspace behavior
+                                    try:
+                                        pygame.key.set_repeat(120, 40)
+                                    except Exception:
+                                        pass
+                                    # ensure textbox has focus and prefill if empty
+                                    if not self.editor.save_text:
+                                        if self.current_map and self.current_map != "New Map":
+                                            self.editor.save_text = os.path.splitext(self.current_map)[0]
+                                        else:
+                                            self.editor.save_text = ''
                                 else:
                                     if self.editor.save_text:
                                         filename = self.editor.save_text if self.editor.save_text.endswith('.json') else f"{self.editor.save_text}.json"
@@ -540,41 +395,119 @@ class Simulator:
                                             self.available_maps = self.scan_maps_directory()
                                 continue
 
-                            # Clicking elsewhere should hide text input
-                            self.editor.save_text_active = False
+                            # Clicking the toolbox area should not be intercepted by the map selector
+                            mx, my = pos
+                            # If user clicked inside the save text rect, activate the text input
+                            if hasattr(self.editor, 'save_text_rect') and self.editor.save_text_rect.collidepoint(pos):
+                                # focus the inline save text box
+                                self.editor.save_text_active = True
+                                try:
+                                    pygame.key.set_repeat(120, 40)
+                                except Exception:
+                                    pass
+                                continue
 
-                            # Pass the click to the editor toolbox / map
-                            mx, my = event.pos
                             for tool, rect in self.editor.toolbox_rects.items():
                                 if rect.collidepoint(mx, my):
-                                    self.editor.selected_tool = tool
+                                    # If clicking the start_marker/goal_marker tool, start the two-step placement
+                                    if tool == 'start_marker':
+                                        # begin two-step start placement (don't remove current marker until finalized)
+                                        self.editor.placing_start = True
+                                        self.editor.placing_start_anchor = None
+                                        self.editor.placing_start_angling = False
+                                        self.editor.placing_goal = False
+                                        self.editor.selected_tool = tool
+                                    elif tool == 'goal_marker':
+                                        # begin two-step goal placement (keep existing marker until finalized)
+                                        self.editor.placing_goal = True
+                                        self.editor.placing_goal_anchor = None
+                                        self.editor.placing_goal_angling = False
+                                        self.editor.placing_start = False
+                                        self.editor.selected_tool = tool
+                                    else:
+                                        # regular tool selection
+                                        self.editor.selected_tool = tool
                                     break
                             else:
-                                # Map click: handle tool actions
-                                wx, wy = self.editor.screen_to_world(mx, my)
-                                if self.editor.selected_tool == 'circle':
-                                    self.editor.obstacles.append(CircleObstacle(wx, wy, self.editor.obstacle_size))
-                                elif self.editor.selected_tool == 'line':
-                                    if self.editor.line_start is None:
-                                        self.editor.line_start = (wx, wy)
-                                    else:
-                                        self.editor.obstacles.append(LineObstacle(self.editor.line_start, (wx, wy), self.editor.obstacle_size))
-                                        self.editor.line_start = None
-                                elif self.editor.selected_tool == 'polygon':
-                                    if len(self.editor.temp_polygon) >= 3:
-                                        start_x, start_y = self.editor.temp_polygon[0]
-                                        if self.editor.is_near_point(wx, wy, start_x, start_y):
-                                            self.editor.obstacles.append(PolygonObstacle(self.editor.temp_polygon, RED))
-                                            self.editor.temp_polygon = []
+                                # Map click: clicking outside toolbox/save should hide text input
+                                if hasattr(self.editor, 'save_text_active') and self.editor.save_text_active:
+                                    # if click is not on save_rect or save_text_rect, hide input
+                                    if not (hasattr(self.editor, 'save_rect') and self.editor.save_rect.collidepoint(pos)) and not (hasattr(self.editor, 'save_text_rect') and self.editor.save_text_rect.collidepoint(pos)):
+                                        self.editor.save_text_active = False
+                                        try:
+                                            pygame.key.set_repeat(0, 0)
+                                        except Exception:
+                                            pass
+                                wx, wy = screen_to_world(mx, my, self.editor.camera_x, self.editor.camera_y)
+                                # If we're in placing mode, handle two-step anchor+angle
+                                if getattr(self.editor, 'placing_start', False):
+                                    # If anchor is not set yet, set anchor (bulb) and enter angling phase
+                                    if self.editor.placing_start_anchor is None:
+                                        self.editor.placing_start_anchor = (wx, wy)
+                                        self.editor.placing_start_angling = True
+                                    elif self.editor.placing_start_angling:
+                                        # finalize using vector from anchor to this click
+                                        ax, ay = self.editor.placing_start_anchor
+                                        theta = math.atan2(wy - ay, wx - ax)
+                                        self.editor.start_pose = (ax, ay, theta)
+                                        self.editor.placing_start = False
+                                        self.editor.placing_start_anchor = None
+                                        self.editor.placing_start_angling = False
+                                elif getattr(self.editor, 'placing_goal', False):
+                                    if self.editor.placing_goal_anchor is None:
+                                        self.editor.placing_goal_anchor = (wx, wy)
+                                        self.editor.placing_goal_angling = True
+                                    elif self.editor.placing_goal_angling:
+                                        ax, ay = self.editor.placing_goal_anchor
+                                        theta = math.atan2(wy - ay, wx - ax)
+                                        self.editor.goal_pose = (ax, ay, theta)
+                                        self.editor.placing_goal = False
+                                        self.editor.placing_goal_anchor = None
+                                        self.editor.placing_goal_angling = False
+                                else:
+                                    # Normal tool operations
+                                    if self.editor.selected_tool == 'circle':
+                                        self.editor.obstacles.append(CircleObstacle(wx, wy, self.editor.obstacle_size))
+                                    elif self.editor.selected_tool == 'line':
+                                        if self.editor.line_start is None:
+                                            self.editor.line_start = (wx, wy)
+                                        else:
+                                            self.editor.obstacles.append(LineObstacle(self.editor.line_start, (wx, wy), self.editor.obstacle_size))
+                                            self.editor.line_start = None
+                                    elif self.editor.selected_tool == 'polygon':
+                                        if len(self.editor.temp_polygon) >= 3:
+                                            start_x, start_y = self.editor.temp_polygon[0]
+                                            if self.editor.is_near_point(wx, wy, start_x, start_y):
+                                                self.editor.obstacles.append(PolygonObstacle(self.editor.temp_polygon, RED))
+                                                self.editor.temp_polygon = []
+                                            else:
+                                                self.editor.temp_polygon.append((wx, wy))
                                         else:
                                             self.editor.temp_polygon.append((wx, wy))
-                                    else:
-                                        self.editor.temp_polygon.append((wx, wy))
-                                elif self.editor.selected_tool == 'select':
-                                    self.editor.selected_idx = self.editor.obstacle_at_point(wx, wy)
-                                elif self.editor.selected_tool == 'move':
-                                    self.editor.dragging = True
-                                    self.editor.drag_last = (mx, my)
+                                    elif self.editor.selected_tool == 'select':
+                                        self.editor.selected_idx = self.editor.obstacle_at_point(wx, wy)
+                                    elif self.editor.selected_tool == 'move':
+                                        # Start a move operation: prefer selected obstacle if present
+                                        # If clicking near start/goal markers, move them instead
+                                        sel_idx = self.editor.obstacle_at_point(wx, wy)
+                                        if sel_idx is not None:
+                                            self.editor.moving_obs_idx = sel_idx
+                                        else:
+                                            # Check proximity to start/goal
+                                            if self.editor.start_pose is not None and self.editor.is_near_point(wx, wy, self.editor.start_pose[0], self.editor.start_pose[1]):
+                                                self.editor.moving_start = True
+                                            elif self.editor.goal_pose is not None and self.editor.is_near_point(wx, wy, self.editor.goal_pose[0], self.editor.goal_pose[1]):
+                                                self.editor.moving_goal = True
+                                            else:
+                                                # Otherwise start panning drag
+                                                self.editor.dragging = True
+                                                self.editor.drag_last = (mx, my)
+                            # Done handling edit-mode click
+                            continue
+
+                        # Not in edit mode (or edit mode didn't consume click) - check map selector and edit button
+                        if self.handle_map_selector_click(pos):
+                            continue
                             
                     elif event.button == 3:  # Right click
                         if self.edit_mode:
@@ -586,22 +519,59 @@ class Simulator:
                             
                 elif event.type == pygame.MOUSEBUTTONUP:
                     if self.edit_mode:
+                        # Finish any move operations
                         self.editor.dragging = False
                         self.editor.drag_last = None
                         self.editor.selected_idx = None
+                        self.editor.moving_obs_idx = None
+                        self.editor.moving_start = False
+                        self.editor.moving_goal = False
                     
                 elif event.type == pygame.MOUSEMOTION:
                     if self.edit_mode:  
                         if event.buttons[0]:  # Left button
-                            if self.editor.selected_tool == 'move' and self.editor.dragging:
-                                dx = (event.pos[0] - self.editor.drag_last[0]) / SCALE
-                                dy = -(event.pos[1] - self.editor.drag_last[1]) / SCALE
-                                self.editor.camera_x -= dx
-                                self.editor.camera_y -= dy
-                                self.editor.drag_last = event.pos
+                            if self.editor.selected_tool == 'move':
+                                # If moving an obstacle by index
+                                if getattr(self.editor, 'moving_obs_idx', None) is not None:
+                                    idx = self.editor.moving_obs_idx
+                                    wx, wy = screen_to_world(event.pos[0], event.pos[1], self.editor.camera_x, self.editor.camera_y)
+                                    obs = self.editor.obstacles[idx]
+                                    if isinstance(obs, CircleObstacle):
+                                        obs.x = wx
+                                        obs.y = wy
+                                    elif isinstance(obs, PolygonObstacle) or isinstance(obs, LineObstacle):
+                                        # translate all vertices by the delta
+                                        # compute previous world pos of mouse from drag_last
+                                        if self.editor.drag_last is not None:
+                                            prev_wx, prev_wy = screen_to_world(self.editor.drag_last[0], self.editor.drag_last[1], self.editor.camera_x, self.editor.camera_y)
+                                            dx = wx - prev_wx
+                                            dy = wy - prev_wy
+                                            obs.vertices = [(x + dx, y + dy) for x, y in obs.vertices]
+                                    # update drag_last for continuous movement
+                                    self.editor.drag_last = event.pos
+                                elif self.editor.moving_start:
+                                    wx, wy = screen_to_world(event.pos[0], event.pos[1], self.editor.camera_x, self.editor.camera_y)
+                                    try:
+                                        _, _, th = self.editor.start_pose
+                                    except Exception:
+                                        th = 0.0
+                                    self.editor.start_pose = (wx, wy, th)
+                                elif self.editor.moving_goal:
+                                    wx, wy = screen_to_world(event.pos[0], event.pos[1], self.editor.camera_x, self.editor.camera_y)
+                                    try:
+                                        _, _, th = self.editor.goal_pose
+                                    except Exception:
+                                        th = 0.0
+                                    self.editor.goal_pose = (wx, wy, th)
+                                elif self.editor.dragging:
+                                    dx = (event.pos[0] - self.editor.drag_last[0]) / SCALE
+                                    dy = -(event.pos[1] - self.editor.drag_last[1]) / SCALE
+                                    self.editor.camera_x -= dx
+                                    self.editor.camera_y -= dy
+                                    self.editor.drag_last = event.pos
                             elif self.editor.selected_tool == 'select' and self.editor.selected_idx is not None:
                                 # Move selected obstacle
-                                wx, wy = self.editor.screen_to_world(*event.pos)
+                                wx, wy = screen_to_world(event.pos[0], event.pos[1], self.editor.camera_x, self.editor.camera_y)
                                 obs = self.editor.obstacles[self.editor.selected_idx]
                                 if isinstance(obs, CircleObstacle):
                                     obs.x = wx
@@ -630,14 +600,41 @@ class Simulator:
                                     self.current_map = filename
                                     self.available_maps = self.scan_maps_directory()
                             self.editor.save_text_active = False
+                            try:
+                                pygame.key.set_repeat(0, 0)
+                            except Exception:
+                                pass
                         elif event.key == pygame.K_BACKSPACE:
                             self.editor.save_text = self.editor.save_text[:-1]
                         elif event.key == pygame.K_ESCAPE:
                             self.editor.save_text_active = False
+                            try:
+                                pygame.key.set_repeat(0, 0)
+                            except Exception:
+                                pass
                         else:
                             if event.unicode.isprintable():
                                 self.editor.save_text += event.unicode
                         continue
+                    if event.key == pygame.K_SPACE and not self.edit_mode:
+                        self.follow_planner = not self.follow_planner
+                        if self.follow_planner:
+                            try:
+                                traj_msg = self.pose_publisher.latest_trajectory_msg
+                            except Exception:
+                                traj_msg = None
+                            
+                            if traj_msg is not None:
+                                self.active_trajectory = traj_msg
+                                self.active_traj_stamp = traj_msg.header.stamp
+                                self.traj_index = 0
+                            else:
+                                self.active_trajectory = None
+                                self.traj_index = 0
+                    elif event.key == pygame.K_ESCAPE and self.edit_mode:
+                        # Cancel current tool operation
+                        self.editor.temp_polygon = []
+                        self.editor.line_start = None
                     
                     if event.key == pygame.K_SPACE and not self.edit_mode:
                         self.follow_planner = not self.follow_planner
@@ -742,28 +739,24 @@ class Simulator:
             self.screen.fill(GRAY)
             
             if self.edit_mode:
-                # Use SceneEditor's draw
+                # Use SceneEditor's draw (toolbox draws return/save controls)
                 self.editor.screen = self.screen  # Share screen surface
                 self.editor.draw()
-                
-                # Draw Save and Return buttons
-                # Return button
-                pygame.draw.rect(self.screen, LIGHT_BLUE, self.editor.return_rect)
-                text = self.font.render('Return', True, BLACK)
-                self.screen.blit(text, (self.editor.return_rect.x + 10, self.editor.return_rect.y + 4))
-                
-                # Save button
-                pygame.draw.rect(self.screen, GREEN, self.editor.save_rect)
-                text = self.font.render('Save', True, BLACK)
-                self.screen.blit(text, (self.editor.save_rect.x + 20, self.editor.save_rect.y + 4))
             else:
-                # Draw simulation view
-                self.draw_grid()
-                self.draw_vehicle()
-                self.draw_hud()
-                self.draw_obstacles()
-                self.draw_targets()
-                self.draw_planner_trajectory()
+                # Draw simulation view (all rendering centralized in draw.py)
+                draw_grid(self.screen, self.camera_x, self.camera_y)
+                # call draw_vehicle from draw.py directly
+                try:
+                    draw_vehicle(self.screen, self.vehicle, self.camera_x, self.camera_y, is_colliding=self.is_colliding)
+                except Exception:
+                    pass
+                # HUD
+                draw_hud(self.screen, self.vehicle, self.font, self.follow_planner)
+                # Obstacles and start/goal
+                draw_obstacles(self.screen, self.obstacles, self.camera_x, self.camera_y)
+                draw_start_goal(self.screen, self.start_pose, self.target_pose, self.camera_x, self.camera_y)
+                # Planner trajectory
+                draw_planner_trajectory(self.screen, self)
                 
             draw_map_selector(self.screen, self)  # Always show map selector
 

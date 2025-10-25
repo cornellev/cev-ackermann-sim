@@ -35,6 +35,7 @@ class SceneEditor:
         self.obstacle_size = cone_radius
         self.toolbox_rects = {}
         self.panning = False
+        # Text-input map naming (inline save box to left of Save button)
         self.save_text = ""
         self.save_text_active = False
         # start/goal for editor (None means not set)
@@ -42,6 +43,16 @@ class SceneEditor:
         self.goal_pose = None
         self.placing_start = False
         self.placing_goal = False
+        # Two-step placement state: anchor (position) and angling phase
+        self.placing_start_anchor = None
+        self.placing_start_angling = False
+        self.placing_goal_anchor = None
+        self.placing_goal_angling = False
+        self.preview_theta = 0.0
+        # Move tool state for translating objects
+        self.moving_start = False
+        self.moving_goal = False
+        self.moving_obs_idx = None
         
         # Top-right buttons setup
         padding = 10
@@ -70,12 +81,6 @@ class SceneEditor:
     def is_near_point(self, x1, y1, x2, y2, threshold=0.5):
         """Check if two points are within threshold distance"""
         return math.hypot(x1 - x2, y1 - y2) <= threshold
-
-    def world_to_screen(self, x, y):
-        return world_to_screen(x, y, self.camera_x, self.camera_y)
-
-    def screen_to_world(self, sx, sy):
-        return screen_to_world(sx, sy, self.camera_x, self.camera_y)
         
     def save_map(self, map_path, vehicle_pos=None, target_pos=None):
         """Save current scene to a map file.
@@ -137,13 +142,11 @@ class SceneEditor:
             if maps_dir and not os.path.exists(maps_dir):
                 os.makedirs(maps_dir, exist_ok=True)
             
-            # Write atomically using temporary file
-            tmp_path = map_path + '.tmp'
-            with open(tmp_path, 'w') as f:
+            # Write directly to the requested path (non-atomic per user request)
+            with open(map_path, 'w') as f:
                 json.dump(scene, f, indent=2)
-            os.replace(tmp_path, map_path)
-            
-            # Update editor state
+
+            # Update editor state and log
             print(f"Saved map to {map_path}")
             self.save_text = ""  # Clear the text input
             self.save_text_active = False  # Hide the text input
@@ -172,15 +175,64 @@ class SceneEditor:
 
         # Temp polygon preview
         if len(self.temp_polygon) > 0:
-            pts = [self.world_to_screen(x, y) for x, y in self.temp_polygon]
+            pts = [world_to_screen(x, y, self.camera_x, self.camera_y) for x, y in self.temp_polygon]
             if len(pts) > 1:
                 pygame.draw.lines(self.screen, YELLOW, False, pts, 2)
             for p in pts:
                 pygame.draw.circle(self.screen, YELLOW, p, 4)
 
-        # Draw toolbox and controls
+        # Line preview: if a line start exists but the line isn't finalized, draw preview to mouse
+        if self.line_start is not None:
+            try:
+                mx, my = pygame.mouse.get_pos()
+                wx, wy = screen_to_world(mx, my, self.camera_x, self.camera_y)
+                start_screen = world_to_screen(self.line_start[0], self.line_start[1], self.camera_x, self.camera_y)
+                end_screen = world_to_screen(wx, wy, self.camera_x, self.camera_y)
+                pygame.draw.line(self.screen, WHITE, start_screen, end_screen, 2)
+                pygame.draw.circle(self.screen, WHITE, start_screen, 4)
+            except Exception:
+                pass
+
+        # If in angling mode for start/goal show a preview: bulb at anchor and line to mouse cursor
+        try:
+            mx, my = pygame.mouse.get_pos()
+            wx, wy = screen_to_world(mx, my, self.camera_x, self.camera_y)
+            if getattr(self, 'placing_start_angling', False) and self.placing_start_anchor is not None:
+                ax, ay = self.placing_start_anchor
+                a_screen = world_to_screen(ax, ay, self.camera_x, self.camera_y)
+                pygame.draw.circle(self.screen, START_COLOR, a_screen, 8)
+                # compute capped preview point based on ANGLE_PREVIEW_LENGTH
+                dx = wx - ax
+                dy = wy - ay
+                dist = math.hypot(dx, dy)
+                if dist > 1e-6:
+                    scale = min(ANGLE_PREVIEW_LENGTH, dist) / dist
+                    px = ax + dx * scale
+                    py = ay + dy * scale
+                else:
+                    px, py = ax + ANGLE_PREVIEW_LENGTH, ay
+                cursor_screen = world_to_screen(px, py, self.camera_x, self.camera_y)
+                pygame.draw.line(self.screen, START_COLOR, a_screen, cursor_screen, 2)
+            if getattr(self, 'placing_goal_angling', False) and self.placing_goal_anchor is not None:
+                ax, ay = self.placing_goal_anchor
+                a_screen = world_to_screen(ax, ay, self.camera_x, self.camera_y)
+                pygame.draw.circle(self.screen, GOAL_COLOR, a_screen, 8)
+                dx = wx - ax
+                dy = wy - ay
+                dist = math.hypot(dx, dy)
+                if dist > 1e-6:
+                    scale = min(ANGLE_PREVIEW_LENGTH, dist) / dist
+                    px = ax + dx * scale
+                    py = ay + dy * scale
+                else:
+                    px, py = ax + ANGLE_PREVIEW_LENGTH, ay
+                cursor_screen = world_to_screen(px, py, self.camera_x, self.camera_y)
+                pygame.draw.line(self.screen, GOAL_COLOR, a_screen, cursor_screen, 2)
+        except Exception:
+            pass
+
+        # Draw toolbox and controls (parent is responsible for flipping)
         draw_toolbox(self.screen, self)
-        pygame.display.flip()
 
     def obstacle_at_point(self, wx, wy):
         for idx, obs in enumerate(self.obstacles):
