@@ -19,9 +19,12 @@ From `src`, clone dependencies with the following:
 - cev_msgs
 - https://github.com/ros-drivers/ackermann_msgs
 Then from `src`, run:
+
 `colcon build && source install/setup.bash`
 
 To run:
 `ros2 run cev_planner_ros2 planner_node`
+
 `ros2 launch trajectory_follower launch.py`
+
 `python3 cev-ackermann-sim/sim.py`
