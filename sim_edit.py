@@ -135,23 +135,11 @@ class SceneEditor:
         # Obstacles
         draw_obstacles(self.screen, self.obstacles, self.camera_x, self.camera_y)
 
-        # Start/Goal with direction preview
-        mx, my = pygame.mouse.get_pos()
-        wx, wy = self.screen_to_world(mx, my)
-
-        # Draw start/goal with direction preview
-        if self.placing_start and self.start_pose and len(self.start_pose) == 4:
-            x, y, _, _ = self.start_pose
-            theta = math.atan2(wy - y, wx - x)
-            preview_pose = (x, y, theta)
-            draw_start_goal(self.screen, preview_pose, self.goal_pose, self.camera_x, self.camera_y)
-        elif self.placing_goal and self.goal_pose and len(self.goal_pose) == 4:
-            x, y, _, _ = self.goal_pose
-            theta = math.atan2(wy - y, wx - x)
-            preview_pose = (x, y, theta)
-            draw_start_goal(self.screen, self.start_pose, preview_pose, self.camera_x, self.camera_y)
-        else:
+        # Start/Goal (shared util)
+        try:
             draw_start_goal(self.screen, self.start_pose, self.goal_pose, self.camera_x, self.camera_y)
+        except Exception:
+            pass
 
         # Temp polygon preview
         if len(self.temp_polygon) > 0:
@@ -262,15 +250,12 @@ class SceneEditor:
                             running = False
                             continue
                         if self.embedded and hasattr(self, 'save_rect') and self.save_rect.collidepoint(mx, my):
-                            if not self.save_text:
-                                # First click: Show text input
+                            # Save button: toggle text input visibility or request save if already typing
+                            if not self.save_text_active:
                                 self.save_text_active = True
-                                self.save_text = ""  # Clear any previous text
-                            elif self.save_text and self.save_text_active:
-                                # Second click with text: Trigger save
-                                map_path = os.path.join("maps", self.save_text + ".json")
-                                if self.save_map(map_path, self.start_pose, self.goal_pose):
-                                    self.save_text_active = False  # Hide input after successful save
+                            else:
+                                # clicking Save while typing: leave it to parent to call save_map
+                                pass
                             continue
                         # Tool/Start/Goal buttons in bottom toolbox
                         for name, rect in list(self.toolbox_rects.items()):
@@ -373,28 +358,17 @@ class SceneEditor:
                                 wx, wy = self.screen_to_world(mx, my)
                                 # Handle start/goal placement first
                                 if self.placing_start:
-                                    if self.start_pose is None or len(self.start_pose) < 4:
-                                        # First click: store position and wait for direction
-                                        self.start_pose = (wx, wy, 0.0, False)  # False means direction not set
-                                    else:
-                                        # Second click: finalize direction
-                                        x, y, _, _ = self.start_pose
-                                        theta = math.atan2(wy - y, wx - x)
-                                        self.start_pose = (x, y, theta)
-                                        self.placing_start = False
-                                        self.selected_tool = 'select'
+                                    # set start pose to clicked location, keep heading same if set
+                                    heading = self.start_pose[2] if self.start_pose is not None else 0.0
+                                    self.start_pose = (wx, wy, heading)
+                                    self.placing_start = False
+                                    self.selected_tool = 'select'  # Switch to select after placing
                                     continue
                                 if self.placing_goal:
-                                    if self.goal_pose is None or len(self.goal_pose) < 4:
-                                        # First click: store position and wait for direction
-                                        self.goal_pose = (wx, wy, 0.0, False)  # False means direction not set
-                                    else:
-                                        # Second click: finalize direction
-                                        x, y, _, _ = self.goal_pose
-                                        theta = math.atan2(wy - y, wx - x)
-                                        self.goal_pose = (x, y, theta)
-                                        self.placing_goal = False
-                                        self.selected_tool = 'select'
+                                    heading = self.goal_pose[2] if self.goal_pose is not None else 0.0
+                                    self.goal_pose = (wx, wy, heading)
+                                    self.placing_goal = False
+                                    self.selected_tool = 'select'  # Switch to select after placing
                                     continue
                                 
                                 # Handle selection/dragging

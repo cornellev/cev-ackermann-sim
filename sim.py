@@ -1,23 +1,50 @@
 import pygame
 import math
+import os
+import json
 import rclpy
+import atexit
 from rclpy.node import Node
 from objects import CircleObstacle, CollisionDetector, PolygonObstacle, LineObstacle
-from constants import SCALE, SCREEN_WIDTH, SCREEN_HEIGHT, LIGHT_GRAY, LIGHT_BLUE, BLACK, RED, YELLOW, WHITE, FPS, GRAY
+from obstacle_loader import load_obstacles_from_json
+from constants import *
 from sim_publisher import VehiclePublisher
+from cev_msgs.msg import Trajectory as CevTrajectory
+from sim_edit import SceneEditor
+from draw_utils import *
+
+try:
+    # Workaround for some rclpy versions where SingleThreadedExecutor.__del__
+    # accesses an attribute that may be removed during interpreter shutdown.
+    import rclpy.executors as _rclpy_executors
+    _orig_del = getattr(_rclpy_executors.SingleThreadedExecutor, '__del__', None)
+    def _safe_executor_del(self):
+        try:
+            if _orig_del:
+                _orig_del(self)
+        except AttributeError:
+            pass
+    _rclpy_executors.SingleThreadedExecutor.__del__ = _safe_executor_del
+except Exception:
+    pass
+
+# Colors
+RED = (255, 0, 0)
+BLACK = (0, 0, 0)
+WHITE = (255, 255, 255)
 
 pygame.init()
 
 class Vehicle:
     def __init__(self, x=0, y=0):
         # Vehicle parameters in meters
-        self.wheelbase = 0.9144  # L
-        self.track_width = 0.6096  # w
+        self.wheelbase = 0.4572*0.8  # L (18 inches)
+        self.track_width = 0.3048  # W (12 inches)
         self.length = 0.9144 # 3 feet in meters
-        self.width = 0.6096 # 2 feet in meters
+        self.width = 0.6096  # 2 feet in meters
 
-        self.max_speed = 5.0  # m/s
-        self.throttle_acceleration = 2.0  # m/s^2
+        self.max_speed = 2.2352  # m/s (5 mph)
+        self.throttle_acceleration = 2.5  # m/s^2
         self.steering_rate = math.radians(45) # rad/s
 
         # TODO: steering system parameters
@@ -88,58 +115,90 @@ class Vehicle:
         This is the maximum angle a wheel can turn, NOT the maximum effective steering angle
         (though the two should be close)
         """
-        # TODO: derive max steering angle
-        return math.radians(30) # conservative placeholder
+        # arccot of average of cot of outer wheels 
+        return math.radians(33.58) # 30 deg, 38 deg
 
 class Simulator:
-    def __init__(self):
-        rclpy.init()
+    def __init__(self, scene_arg: str = None):
+        # Initialize ROS node
+        self.node_initialized = False
+        try:
+            rclpy.init()
+            self.node_initialized = True
+            # Ensure rclpy is shutdown on process exit to avoid destructor warnings
+            def _safe_rclpy_shutdown():
+                try:
+                    rclpy.shutdown()
+                except Exception:
+                    pass
+            atexit.register(_safe_rclpy_shutdown)
+        except Exception:
+            print("Warning: Failed to initialize ROS node")
+
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         pygame.display.set_caption("Vehicle Simulator")
         self.clock = pygame.time.Clock()
         self.font = pygame.font.SysFont("monospace", 18)
-        self.vehicle = Vehicle(0, 0)
+        
+        # UI state for map selector
+        self.maps_dir = os.path.join(os.path.dirname(__file__), 'maps')
+        self.available_maps = self.scan_maps_directory()
+        self.current_map = None
+        self.dropdown_open = False
+        self.dropdown_rect = pygame.Rect(SCREEN_WIDTH - 220, 10, 150, 30)
+        self.edit_button_rect = pygame.Rect(SCREEN_WIDTH - 60, 10, 50, 30)
+        
+        # Editor state
+        self.edit_mode = False
+        self.editor = None  # Will be initialized when entering edit mode
+        self.show_map_controls = True  # Toggle for dropdown/edit visibility
+        
+        # Initialize publisher before loading maps
+        self.pose_publisher = VehiclePublisher() if self.node_initialized else None
+        
+        # load scene from config if available (obstacles, start, goal)
+        self.vehicle = Vehicle()
+        self.vehicle.heading = 0.0
+        self.vehicle.speed = 0.0
 
-        self.obstacles = [
-            # CircleObstacle(10, 5, 0.4572), # 18 inches in meters (this is a cone)
-            # CircleObstacle(-5, 10, 0.4572),
-            # CircleObstacle(15, -8, 0.4572),
-            # # another obstacle next to that one to test collision
-            # CircleObstacle(15, -10, 0.4572),
-            # # big cube for testing
-            # # PolygonObstacle([(-3, -3), (-1, -3), (-1, -1), (-3, -1)], (255, 165, 0)),
-            # # 2 road lines of thickess 0.15m from (-10,0) to (10,0) 10 feet wide
-            # LineObstacle((-10, 0.75), (10, 0.75), 0.15),
-            # LineObstacle((-10, -0.75), (10, -0.75), 0.15)
-            #
-            # make two cones one above another
-            CircleObstacle(2, 5, 0.4572), # 18 inches in meters (this is a cone)
-            CircleObstacle(2, 6.2, 0.4572),
-            CircleObstacle(5.5, 5.2, 0.4572),
-            CircleObstacle(5.5, 6, 0.4572),
-            CircleObstacle(5.5, 7, 0.4572),
+        # Load initial map
+        if scene_arg and os.path.exists(scene_arg):
+            self.load_map(scene_arg)
+        elif len(self.available_maps) > 0:
+            self.load_map(os.path.join(self.maps_dir, self.available_maps[0]))
+        else:
+            self.load_empty_map()
 
-            CircleObstacle(8, 4.5, 0.4572),
-            CircleObstacle(8, 3.5, 0.4572),
-
-            # make a road line directly above the top cones
-            LineObstacle((-10, 7.75), (20, 7.75), 0.15),
-            LineObstacle((-10, 2.75), (20, 2.75), 0.15),
-
-
-        ]
+        # collision detector used each frame
         self.collision_detector = CollisionDetector()
         self.is_colliding = False
 
         self.camera_x = 0
         self.camera_y = 0
 
-        self.pose_publisher = VehiclePublisher()
+
+        self.active_trajectory = None
+        self.traj_index = 0
+        self.follow_planner = False
 
         try:
             self.pose_publisher.publish_occupancy_grid(self.obstacles, width_m=30.0, height_m=30.0, resolution=0.1)
         except Exception as e:
             print(f"Failed to publish initial occupancy grid: {e}")
+
+        try:
+            # publish stuff
+            self.pose_publisher.publish_pose(self.vehicle.x, self.vehicle.y, self.vehicle.heading, self.vehicle.speed, self.vehicle.steering_angle)
+            self.pose_publisher.publish_odometry(self.vehicle.x, self.vehicle.y, self.vehicle.heading, self.vehicle.speed)
+        except Exception:
+            pass
+
+        # start/goal should already be set by load_map() or load_empty_map()
+        # Ensure attributes exist and provide sensible defaults if not.
+        if not hasattr(self, 'start_pose'):
+            self.start_pose = (float(self.vehicle.x), float(self.vehicle.y), float(self.vehicle.heading))
+        if not hasattr(self, 'target_pose'):
+            self.target_pose = (12.0, 5.0, 0.0)
 
         self.publish_interval = 0.1
         self._last_publish_time = pygame.time.get_ticks() / 1000.0
@@ -171,24 +230,10 @@ class Simulator:
         return speed_input, steer_input
 
     def world_to_screen(self, x, y):
-        """Converts world coordinates (meters) to screen coordinates (pixels)."""
-        screen_x = int((x - self.camera_x) * SCALE + SCREEN_WIDTH / 2)
-        # Invert y-axis for Pygame's coordinate system
-        screen_y = int(-(y - self.camera_y) * SCALE + SCREEN_HEIGHT / 2)
-        return screen_x, screen_y
+        return world_to_screen(x, y, self.camera_x, self.camera_y)
 
     def draw_grid(self):
-        """Draws a grid on the screen for reference."""
-        grid_size = 50 # meters
-        for i in range(-grid_size, grid_size + 1):
-            # Vertical lines
-            start_pos = self.world_to_screen(i, -grid_size)
-            end_pos = self.world_to_screen(i, grid_size)
-            pygame.draw.line(self.screen, LIGHT_GRAY, start_pos, end_pos, 1)
-            # Horizontal lines
-            start_pos = self.world_to_screen(-grid_size, i)
-            end_pos = self.world_to_screen(grid_size, i)
-            pygame.draw.line(self.screen, LIGHT_GRAY, start_pos, end_pos, 1)
+        draw_grid(self.screen, self.camera_x, self.camera_y)
 
     def draw_wheel(self, center_x, center_y, width, length, wheel_angle):
         """Draws a single wheel as a rectangle"""
@@ -243,8 +288,7 @@ class Simulator:
             front_wheel_y = self.vehicle.y + half_wheelbase * math.sin(self.vehicle.heading) + side * half_track * math.sin(self.vehicle.heading + math.pi/2)
             self.draw_wheel(front_wheel_x, front_wheel_y, wheel_width, wheel_length, self.vehicle.heading + wheel_angle)
     def draw_obstacles(self):
-        for obs in self.obstacles:
-            obs.draw(self.screen,self.world_to_screen)
+        draw_obstacles(self.screen, self.obstacles, self.camera_x, self.camera_y)
 
     def draw_hud(self):
         """Displays vehicle state information on the screen."""
@@ -261,19 +305,458 @@ class Simulator:
         for i, line in enumerate(info):
             text_surface = self.font.render(line, True, WHITE)
             self.screen.blit(text_surface, (10, 10 + i * 25))
+        
+        # added rendering for following
+        follow_text = f"Follow planner: {'ON' if self.follow_planner else 'OFF'}"
+        follow_surface = self.font.render(follow_text, True, (0, 255, 0) if self.follow_planner else (255, 100, 100))
+        self.screen.blit(follow_surface, (10, 10 + len(info) * 25))
+    
+    def draw_targets(self):
+        draw_start_goal(self.screen, self.start_pose, self.target_pose, self.camera_x, self.camera_y)
+
+    # this is probably really really slow but I'll worry about that later
+    def draw_map_selector(self):
+        """Draw the map selector dropdown and edit button"""
+        if not self.show_map_controls:
+            return
+            
+        # Draw dropdown button
+        pygame.draw.rect(self.screen, (200, 200, 200), self.dropdown_rect)
+        # Remove .json from display name
+        name = self.current_map.replace('.json', '') if self.current_map else "Select Map"
+        text = self.font.render(name[:18], True, (0, 0, 0))
+        self.screen.blit(text, (self.dropdown_rect.x + 5, self.dropdown_rect.y + 5))
+        
+        # Draw dropdown list if open
+        if self.dropdown_open:
+            y = self.dropdown_rect.bottom
+            for map_name in self.available_maps + ["New Map"]:
+                r = pygame.Rect(self.dropdown_rect.x, y, self.dropdown_rect.width, 30)
+                pygame.draw.rect(self.screen, (255, 255, 255), r)
+                pygame.draw.rect(self.screen, (180, 180, 180), r, 1)
+                # Remove .json from display name
+                display_name = map_name.replace('.json', '') if map_name != "New Map" else map_name
+                text = self.font.render(display_name[:18], True, (0, 0, 0))
+                self.screen.blit(text, (r.x + 5, r.y + 5))
+                y += 30
+                
+        # Draw edit button
+        pygame.draw.rect(self.screen, (100, 149, 237), self.edit_button_rect)
+        text = self.font.render("Edit", True, (255, 255, 255))
+        text_rect = text.get_rect(center=self.edit_button_rect.center)
+        self.screen.blit(text, text_rect)
+        
+    def handle_map_selector_click(self, pos):
+        """Handle clicks on map selector UI elements"""
+        if self.dropdown_rect.collidepoint(pos):
+            self.dropdown_open = not self.dropdown_open
+            return True
+            
+        if self.dropdown_open:
+            # Check dropdown item clicks
+            y = self.dropdown_rect.bottom
+            for map_name in self.available_maps + ["New Map"]:
+                r = pygame.Rect(self.dropdown_rect.x, y, self.dropdown_rect.width, 30)
+                if r.collidepoint(pos):
+                    if map_name == "New Map":
+                        self.load_empty_map()
+                    else:
+                        self.load_map(os.path.join(self.maps_dir, map_name))
+                    self.dropdown_open = False
+                    return True
+                y += 30
+                
+        if self.edit_button_rect.collidepoint(pos):
+            self.toggle_editor()
+            return True
+            
+        return False
+        
+    def draw_editor_grid(self):
+        # Use shared draw_grid for editor
+        self.editor.screen = self.screen
+        draw_grid(self.screen, self.editor.camera_x, self.editor.camera_y)
+            
+    def world_to_screen(self, x, y):
+        return world_to_screen(x, y, self.camera_x, self.camera_y)
+        
+    def screen_to_world(self, sx, sy):
+        return screen_to_world(sx, sy, self.camera_x, self.camera_y)
+        
+    def scan_maps_directory(self):
+        """Get list of available map files"""
+        try:
+            if not os.path.exists(self.maps_dir):
+                os.makedirs(self.maps_dir)
+            maps = [f for f in os.listdir(self.maps_dir) if f.endswith('.json')]
+            return sorted(maps)
+        except Exception:
+            return []
+
+    def load_map(self, map_path):
+        """Load a map file and update sim state"""
+        try:
+            # Load obstacles
+            self.obstacles = load_obstacles_from_json(map_path)
+            self.current_map = os.path.basename(map_path)
+            
+            # Load start/goal and update vehicle
+            with open(map_path, 'r') as fh:
+                scene_obj = json.load(fh)
+                
+            # Get start pose and update vehicle
+            start = scene_obj.get('start', None)
+            if start is not None:
+                self.vehicle.x = float(start.get('x', 0.0))
+                self.vehicle.y = float(start.get('y', 0.0))
+                self.vehicle.heading = float(start.get('theta', 0.0))
+                self.start_pose = (self.vehicle.x, self.vehicle.y, self.vehicle.heading)
+            else:
+                self.start_pose = None
+            
+            # Get goal pose
+            goal = scene_obj.get('goal', None)
+            if goal is not None:
+                gx = float(goal.get('x', self.vehicle.x + 14.0))
+                gy = float(goal.get('y', self.vehicle.y))
+                gtheta = float(goal.get('theta', 0.0))
+                self.target_pose = (gx, gy, gtheta)
+            else:
+                self.target_pose = None
+            
+            # Publish updates
+            self.pose_publisher.publish_occupancy_grid(self.obstacles)
+            self.pose_publisher.publish_target(gx, gy, 0.0, 0.0, gtheta)
+            
+        except Exception as e:
+            print(f"Failed to load map {map_path}: {e}")
+            self.load_empty_map()
+
+    def load_empty_map(self):
+        """Load an empty map with default settings"""
+        self.obstacles = []
+        self.current_map = "New Map"
+        # Default positions
+        self.vehicle.x = 0.0
+        self.vehicle.y = 0.0
+        self.vehicle.heading = 0.0
+        # For a fresh New Map leave start and goal unset (None)
+        self.start_pose = None
+        self.target_pose = None
+        # Publish empty grid
+        try:
+            self.pose_publisher.publish_occupancy_grid(self.obstacles)
+        except Exception:
+            pass
+
+    def toggle_editor(self):
+        """Toggle between simulation and editor modes"""
+        self.edit_mode = not self.edit_mode
+        self.show_map_controls = not self.edit_mode
+        
+        if self.edit_mode:
+            # Initialize editor in embedded mode
+            map_path = os.path.join(self.maps_dir, self.current_map) if self.current_map and self.current_map != "New Map" else None
+            self.editor = SceneEditor(scene_path=map_path, embedded=True)
+            # Share screen with editor
+            self.editor.screen = self.screen
+            # Sync editor state with current sim state
+            self.editor.obstacles = self.obstacles.copy()
+            self.editor.camera_x = self.vehicle.x
+            self.editor.camera_y = self.vehicle.y
+            # Sync start/goal into editor so they can be moved
+            try:
+                self.editor.start_pose = tuple(self.start_pose)
+                self.editor.goal_pose = tuple(self.target_pose)
+            except Exception:
+                pass
+        else:
+            # Copy obstacles back from editor
+            self.obstacles = self.editor.obstacles.copy()
+            # Copy start/goal back from editor
+            try:
+                self.start_pose = tuple(self.editor.start_pose)
+                self.target_pose = tuple(self.editor.goal_pose)
+                # publish target update
+                try:
+                    if self.pose_publisher is not None:
+                        gx, gy, gtheta = self.target_pose
+                        self.pose_publisher.publish_target(gx, gy, 0.0, 0.0, gtheta)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            # Clean up
+            self.editor = None
+            # Update map list
+            self.available_maps = self.scan_maps_directory()
+
+    def draw_planner_trajectory(self):
+        """Draw the latest planner trajectory (or active trajectory) as a yellow polyline with waypoint markers."""
+        try:
+            traj_msg = None
+            if getattr(self, 'active_trajectory', None) is not None:
+                traj_msg = self.active_trajectory
+            else:
+                traj_msg = getattr(self.pose_publisher, 'latest_trajectory_msg', None)
+        except Exception:
+            traj_msg = None
+
+        if traj_msg is None:
+            return
+
+        points = []
+        try:
+            for wp in traj_msg.waypoints:
+                points.append(self.world_to_screen(wp.x, wp.y))
+        except Exception:
+            return
+
+        if len(points) == 0:
+            return
+
+        try:
+            pygame.draw.lines(self.screen, YELLOW, False, points, 2)
+        except Exception:
+            pass
+
+        for p in points:
+            try:
+                pygame.draw.circle(self.screen, YELLOW, p, 4)
+            except Exception:
+                pass
 
 
     def run(self):
         """Main simulation loop"""
         running = True
         dt = 1.0 / FPS
+        dragging = False
+        drag_start = None
 
         while running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
+                    if self.node_initialized:
+                        self.pose_publisher.destroy_node()
+                        rclpy.shutdown()
                     running = False
+                    
+                elif event.type == pygame.MOUSEBUTTONDOWN:
+                    if event.button == 1:  # Left click
+                        # Always check map selector first
+                        if self.handle_map_selector_click(event.pos):
+                            continue
+                            
+                        if self.edit_mode:
+                            pos = event.pos
+                            # Check Return button (top-right) if present
+                            if hasattr(self.editor, 'return_rect') and self.editor.return_rect.collidepoint(pos):
+                                self.toggle_editor()
+                                continue
+                            # If editor has a save_rect and it's clicked, toggle save input
+                            if hasattr(self.editor, 'save_rect') and self.editor.save_rect.collidepoint(pos):
+                                if not self.editor.save_text_active:
+                                    self.editor.save_text_active = True
+                                else:
+                                    # if already active and there's text, perform save
+                                    if self.editor.save_text:
+                                        filename = self.editor.save_text if self.editor.save_text.endswith('.json') else f"{self.editor.save_text}.json"
+                                        map_path = os.path.join(self.maps_dir, filename)
+                                        vehicle_pos = (self.vehicle.x, self.vehicle.y, self.vehicle.heading)
+                                        try:
+                                            start_for_save = tuple(self.editor.start_pose)
+                                        except Exception:
+                                            start_for_save = vehicle_pos
+                                        try:
+                                            goal_for_save = tuple(self.editor.goal_pose)
+                                        except Exception:
+                                            goal_for_save = tuple(self.target_pose)
+                                        if self.editor.save_map(map_path, start_for_save, goal_for_save):
+                                            self.current_map = filename
+                                            self.available_maps = self.scan_maps_directory()
+                                continue
+                            else:
+                                # Clicking elsewhere should hide text input
+                                self.editor.save_text_active = False
+                            
+                            # Pass event to editor
+                            mx, my = event.pos
+                            # Check toolbox
+                            for tool, rect in self.editor.toolbox_rects.items():
+                                if rect.collidepoint(mx, my):
+                                    self.editor.selected_tool = tool
+                                    break
+                            else:
+                                # Handle tool actions
+                                wx, wy = self.editor.screen_to_world(mx, my)
+                                if self.editor.selected_tool == 'circle':
+                                    self.editor.obstacles.append(CircleObstacle(wx, wy, self.editor.obstacle_size))
+                                elif self.editor.selected_tool == 'line':
+                                    if self.editor.line_start is None:
+                                        self.editor.line_start = (wx, wy)
+                                    else:
+                                        self.editor.obstacles.append(LineObstacle(
+                                            self.editor.line_start, (wx, wy), self.editor.obstacle_size))
+                                        self.editor.line_start = None
+                                elif self.editor.selected_tool == 'polygon':
+                                    # Check if clicking near start point to close polygon
+                                    if len(self.editor.temp_polygon) >= 3:
+                                        start_x, start_y = self.editor.temp_polygon[0]
+                                        if self.editor.is_near_point(wx, wy, start_x, start_y):
+                                            self.editor.obstacles.append(PolygonObstacle(self.editor.temp_polygon, RED))
+                                            self.editor.temp_polygon = []
+                                        else:
+                                            self.editor.temp_polygon.append((wx, wy))
+                                    else:
+                                        self.editor.temp_polygon.append((wx, wy))
+                                elif self.editor.selected_tool == 'select':
+                                    self.editor.selected_idx = self.editor.obstacle_at_point(wx, wy)
+                                elif self.editor.selected_tool == 'move':
+                                    self.editor.dragging = True
+                                    self.editor.drag_last = (mx, my)
+                            
+                    elif event.button == 3:  # Right click
+                        if self.edit_mode:
+                            # Complete polygon
+                            if len(self.editor.temp_polygon) >= 3:
+                                self.editor.obstacles.append(PolygonObstacle(self.editor.temp_polygon))
+                            self.editor.temp_polygon = []
+                            self.editor.line_start = None
+                            
+                elif event.type == pygame.MOUSEBUTTONUP:
+                    if self.edit_mode:
+                        self.editor.dragging = False
+                        self.editor.drag_last = None
+                        self.editor.selected_idx = None
+                    
+                elif event.type == pygame.MOUSEMOTION:
+                    if self.edit_mode:  
+                        if event.buttons[0]:  # Left button
+                            if self.editor.selected_tool == 'move' and self.editor.dragging:
+                                dx = (event.pos[0] - self.editor.drag_last[0]) / SCALE
+                                dy = -(event.pos[1] - self.editor.drag_last[1]) / SCALE
+                                self.editor.camera_x -= dx
+                                self.editor.camera_y -= dy
+                                self.editor.drag_last = event.pos
+                            elif self.editor.selected_tool == 'select' and self.editor.selected_idx is not None:
+                                # Move selected obstacle
+                                wx, wy = self.editor.screen_to_world(*event.pos)
+                                obs = self.editor.obstacles[self.editor.selected_idx]
+                                if isinstance(obs, CircleObstacle):
+                                    obs.x = wx
+                                    obs.y = wy
+                                
+                elif event.type == pygame.KEYDOWN:
+                    if self.editor and self.editor.save_text_active:
+                        if event.key == pygame.K_RETURN:
+                            if self.editor.save_text:  # Only save if there's text entered
+                                # Add .json if not present
+                                filename = self.editor.save_text if self.editor.save_text.endswith('.json') else f"{self.editor.save_text}.json"
+                                map_path = os.path.join(self.maps_dir, filename)
+                                
+                                # Save map using editor's method (prefer editor start/goal)
+                                vehicle_pos = (self.vehicle.x, self.vehicle.y, self.vehicle.heading)
+                                try:
+                                    start_for_save = tuple(self.editor.start_pose)
+                                except Exception:
+                                    start_for_save = vehicle_pos
+                                try:
+                                    goal_for_save = tuple(self.editor.goal_pose)
+                                except Exception:
+                                    goal_for_save = tuple(self.target_pose)
+                                if self.editor.save_map(map_path, start_for_save, goal_for_save):
+                                    # Update current map and available maps
+                                    self.current_map = filename
+                                    self.available_maps = self.scan_maps_directory()
+                            self.editor.save_text_active = False
+                        elif event.key == pygame.K_BACKSPACE:
+                            self.editor.save_text = self.editor.save_text[:-1]
+                        elif event.key == pygame.K_ESCAPE:
+                            self.editor.save_text_active = False
+                        else:
+                            if event.unicode.isprintable():
+                                self.editor.save_text += event.unicode
+                        continue
+                    
+                    if event.key == pygame.K_SPACE and not self.edit_mode:
+                        self.follow_planner = not self.follow_planner
+                        if self.follow_planner:
+                            try:
+                                traj_msg = self.pose_publisher.latest_trajectory_msg
+                            except Exception:
+                                traj_msg = None
+                            
+                            if traj_msg is not None:
+                                self.active_trajectory = traj_msg
+                                self.active_traj_stamp = traj_msg.header.stamp
+                                self.traj_index = 0
+                            else:
+                                self.active_trajectory = None
+                                self.traj_index = 0
+                    elif event.key == pygame.K_ESCAPE and self.edit_mode:
+                        # Cancel current tool operation
+                        self.editor.temp_polygon = []
+                        self.editor.line_start = None
+
+            try:
+                rclpy.spin_once(self.pose_publisher, timeout_sec=0)
+            except Exception:
+                pass
 
             speed_input, steer_input = self.handle_input()
+            try:
+                traj_msg = self.pose_publisher.latest_trajectory_msg
+            except Exception:
+                traj_msg = None
+
+            if self.follow_planner and traj_msg is not None:
+                if self.active_trajectory is None or traj_msg is not None and getattr(traj_msg, 'header', None) is not None and (self.active_trajectory is None or traj_msg.header.stamp != self.active_traj_stamp):
+                    self.active_trajectory = traj_msg
+                    self.active_traj_stamp = traj_msg.header.stamp
+                    self.traj_index = 0
+
+                if self.active_trajectory is not None and len(self.active_trajectory.waypoints) > 0 and self.traj_index < len(self.active_trajectory.waypoints):
+                    wp = self.active_trajectory.waypoints[self.traj_index]
+                    tx = wp.x
+                    ty = wp.y
+                    tv = wp.v
+
+                    dx = tx - self.vehicle.x
+                    dy = ty - self.vehicle.y
+                    dist = math.hypot(dx, dy)
+
+                    desired_heading = math.atan2(dy, dx)
+                    heading_error = (desired_heading - self.vehicle.heading + math.pi) % (2 * math.pi) - math.pi
+
+                    kp = 1.0
+                    desired_steer = max(-self.vehicle.max_steering_angle, min(self.vehicle.max_steering_angle, kp * heading_error))
+                    steer_delta = desired_steer - self.vehicle.steering_angle
+                    if abs(steer_delta) < 1e-3:
+                        steer_input = 0
+                    else:
+                        steer_input = max(-1.0, min(1.0, steer_delta / (self.vehicle.steering_rate * dt)))
+
+                    if tv is None:
+                        tv = self.vehicle.max_speed * 0.5
+                    if dist < 1.0:
+                        speed_scale = 0.3
+                    else:
+                        speed_scale = 1.0
+
+                    desired_speed = max(-self.vehicle.max_speed, min(self.vehicle.max_speed, tv))
+                    speed_delta = desired_speed - self.vehicle.speed
+                    if abs(speed_delta) < 1e-3:
+                        speed_input = 0
+                    else:
+                        speed_input = max(-1.0, min(1.0, (speed_delta / self.vehicle.throttle_acceleration) / dt)) * speed_scale
+
+                    if dist < 0.5:
+                        self.traj_index += 1
+                else:
+                    self.active_trajectory = None
+                    self.traj_index = 0
+
             self.vehicle.update(dt,speed_input,steer_input)
 
             colliding_obstacles = self.collision_detector.check_collision(self.vehicle.get_corners(), self.obstacles)
@@ -287,16 +770,44 @@ class Simulator:
             if now - self._last_publish_time >= self.publish_interval:
                 try:
                     self.pose_publisher.publish_pose(self.vehicle.x, self.vehicle.y, self.vehicle.heading, self.vehicle.speed, self.vehicle.steering_angle)
+                    try:
+                        self.pose_publisher.publish_odometry(self.vehicle.x, self.vehicle.y, self.vehicle.heading, self.vehicle.speed)
+                    except Exception:
+                        pass
                 except Exception as e:
                     print(f"Failed to publish pose: {e}")
                 self._last_publish_time = now
 
             # Rendering
             self.screen.fill(GRAY)
-            self.draw_grid()
-            self.draw_vehicle()
-            self.draw_hud()
-            self.draw_obstacles()
+            
+            if self.edit_mode:
+                # Use SceneEditor's draw
+                self.editor.screen = self.screen  # Share screen surface
+                self.editor.draw()
+                
+                # Draw Save and Return buttons
+                # Return button
+                pygame.draw.rect(self.screen, LIGHT_BLUE, self.editor.return_rect)
+                text = self.font.render('Return', True, BLACK)
+                self.screen.blit(text, (self.editor.return_rect.x + 10, self.editor.return_rect.y + 4))
+                
+                # Save button
+                pygame.draw.rect(self.screen, GREEN, self.editor.save_rect)
+                text = self.font.render('Save', True, BLACK)
+                self.screen.blit(text, (self.editor.save_rect.x + 20, self.editor.save_rect.y + 4))
+            else:
+                # Draw simulation view
+                self.draw_grid()
+                self.draw_vehicle()
+                from draw_utils import draw_hud, draw_planner_trajectory
+                draw_hud(self.screen, self)
+                self.draw_obstacles()
+                self.draw_targets()
+                draw_planner_trajectory(self.screen, self)
+                
+            from draw_utils import draw_map_selector
+            draw_map_selector(self.screen, self)  # Always show map selector
 
             pygame.display.flip()
             self.clock.tick(FPS)
