@@ -337,6 +337,32 @@ class Simulator:
             # Update map list
             self.available_maps = self.scan_maps_directory()
 
+    def clear_editor_partial(self):
+        """Clear any in-progress editor state (partial polygons, lines, or start/goal placements)."""
+        if not self.editor:
+            return
+        try:
+            self.editor.line_start = None
+        except Exception:
+            pass
+        try:
+            self.editor.temp_polygon = []
+        except Exception:
+            pass
+        # Clear start/goal placing state
+        try:
+            self.editor.placing_start = False
+            self.editor.placing_start_anchor = None
+            self.editor.placing_start_angling = False
+        except Exception:
+            pass
+        try:
+            self.editor.placing_goal = False
+            self.editor.placing_goal_anchor = None
+            self.editor.placing_goal_angling = False
+        except Exception:
+            pass
+
     def run(self):
         """Main simulation loop"""
         running = True
@@ -364,6 +390,8 @@ class Simulator:
                             if hasattr(self.editor, 'save_rect') and self.editor.save_rect.collidepoint(pos):
                                 # Toggle text-entry for map name, or save if already active.
                                 if not self.editor.save_text_active:
+                                    # clear any partial items before switching focus
+                                    self.clear_editor_partial()
                                     # activate text entry
                                     self.editor.save_text_active = True
                                     # enable faster key repeat for smoother backspace behavior
@@ -399,7 +427,8 @@ class Simulator:
                             mx, my = pos
                             # If user clicked inside the save text rect, activate the text input
                             if hasattr(self.editor, 'save_text_rect') and self.editor.save_text_rect.collidepoint(pos):
-                                # focus the inline save text box
+                                # clear partial items then focus the inline save text box
+                                self.clear_editor_partial()
                                 self.editor.save_text_active = True
                                 try:
                                     pygame.key.set_repeat(120, 40)
@@ -410,6 +439,8 @@ class Simulator:
                             for tool, rect in self.editor.toolbox_rects.items():
                                 if rect.collidepoint(mx, my):
                                     # If clicking the start_marker/goal_marker tool, start the two-step placement
+                                    # clear any partial items before switching tools
+                                    self.clear_editor_partial()
                                     if tool == 'start_marker':
                                         # begin two-step start placement (don't remove current marker until finalized)
                                         self.editor.placing_start = True
@@ -616,26 +647,6 @@ class Simulator:
                             if event.unicode.isprintable():
                                 self.editor.save_text += event.unicode
                         continue
-                    if event.key == pygame.K_SPACE and not self.edit_mode:
-                        self.follow_planner = not self.follow_planner
-                        if self.follow_planner:
-                            try:
-                                traj_msg = self.pose_publisher.latest_trajectory_msg
-                            except Exception:
-                                traj_msg = None
-                            
-                            if traj_msg is not None:
-                                self.active_trajectory = traj_msg
-                                self.active_traj_stamp = traj_msg.header.stamp
-                                self.traj_index = 0
-                            else:
-                                self.active_trajectory = None
-                                self.traj_index = 0
-                    elif event.key == pygame.K_ESCAPE and self.edit_mode:
-                        # Cancel current tool operation
-                        self.editor.temp_polygon = []
-                        self.editor.line_start = None
-                    
                     if event.key == pygame.K_SPACE and not self.edit_mode:
                         self.follow_planner = not self.follow_planner
                         if self.follow_planner:
