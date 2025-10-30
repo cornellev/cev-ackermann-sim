@@ -160,7 +160,7 @@ class VehiclePublisher(Node):
     def _point_in_circle(self, x: float, y: float, cx: float, cy: float, r: float) -> bool:
         return (x - cx) ** 2 + (y - cy) ** 2 <= r * r
 
-    def publish_occupancy_grid(self, obstacles, width_m=20.0, height_m=20.0, resolution=0.1, frame_id='map'):
+    def publish_occupancy_grid(self, obstacles, width_m=100.0, height_m=100.0, resolution=0.1, frame_id='map'):
         nx = int(math.ceil(width_m / resolution))
         ny = int(math.ceil(height_m / resolution))
         origin_x = -width_m / 2.0
