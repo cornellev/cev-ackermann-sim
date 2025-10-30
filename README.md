@@ -23,7 +23,7 @@ Then from `src`, run:
 `colcon build && source install/setup.bash`
 
 To run:
-`ros2 run cev_planner_ros2 planner_node`
+`ros2 launch cev_planner_ros2 igvc.py`
 
 `ros2 launch trajectory_follower launch.py`
 
