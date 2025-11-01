@@ -12,6 +12,13 @@ from draw import *
 
 pygame.init()
 
+def calculate_angular_velocity(speed, steering_angle, wheelbase):
+    if abs(steering_angle) > 1e-6:
+        turning_radius = wheelbase / math.tan(steering_angle)
+        return speed / turning_radius
+    else:
+        return 0
+
 class Vehicle:
     def __init__(self, x=0, y=0):
         # Vehicle parameters in meters
@@ -22,7 +29,9 @@ class Vehicle:
 
         self.max_speed = 2.2352  # m/s (5 mph)
         self.throttle_acceleration = 2.5  # m/s^2
+        self.max_acceleration = 2.5  # m/s^2
         self.steering_rate = math.radians(45) # rad/s
+        self.max_steering_rate = math.radians(45) # rad/s
 
         # TODO: steering system parameters
         # parameters go here
@@ -37,6 +46,32 @@ class Vehicle:
 
         self.max_steering_angle = self.calculate_max_steering_angle()
 
+    def force_update(self, dt, speed, steering_angle):
+        """Updates vehicle state with given parameters from trajectory follower. 
+        If the given speed exceeds the max velocity, clamp down to max velocity
+        If the given steering angle exceeds max steering angle speed, clamp down as well
+        """
+        if abs(self.speed - speed) > self.max_acceleration * dt:
+            speed = self.speed + self.max_acceleration * dt if speed > self.speed else self.speed - self.max_acceleration * dt
+        if abs(speed) > self.max_speed:
+            speed = self.max_speed if speed > 0 else -self.max_speed
+        
+        if abs(self.steering_angle - steering_angle) > self.max_steering_rate * dt:
+            steering_angle = self.steering_angle + self.max_steering_rate * dt if steering_angle > self.steering_angle else self.steering_angle - self.max_steering_rate * dt
+        if abs(steering_angle) > self.max_steering_angle:
+            steering_angle = self.max_steering_angle if steering_angle > 0 else -self.max_steering_angle
+
+        self.speed = speed
+        self.steering_angle = steering_angle
+
+        angular_velocity = calculate_angular_velocity(self.speed, self.steering_angle, self.wheelbase)
+        self.heading += angular_velocity * dt
+        # Normalize heading to be within -pi to pi
+        self.heading = (self.heading + math.pi) % (2 * math.pi) - math.pi
+
+        self.x += self.speed * math.cos(self.heading) * dt
+        self.y += self.speed * math.sin(self.heading) * dt
+
     def update(self, dt, speed_input, steer_input):
         """Update vehicle state w/ bicycle model"""
 
@@ -44,7 +79,7 @@ class Vehicle:
         self.speed = max(-self.max_speed, min(self.max_speed, self.speed + speed_input * self.throttle_acceleration * dt))
         if speed_input < 1e-6:
             # natural deceleration
-            self.speed *= 0.98
+            self.speed *= 0.25 ** dt
 
         # update effective steering angle based on steering input
         if steer_input != 0:
@@ -52,10 +87,7 @@ class Vehicle:
         else:
             self.steering_angle = self.steering_angle * 0.9 # natural return to center
         # update position and heading
-        if abs(self.steering_angle) > 1e-6:
-            turning_radius = self.wheelbase / math.tan(self.steering_angle)
-            angular_velocity = self.speed / turning_radius
-        else: angular_velocity = 0
+        angular_velocity = calculate_angular_velocity(self.speed, self.steering_angle, self.wheelbase)
 
         # Calculate heading
         self.heading += angular_velocity * dt
@@ -287,6 +319,7 @@ class Simulator:
         try:
             self.pose_publisher.publish_occupancy_grid(self.obstacles)
         except Exception:
+            print("Failed to publish occupancy grid")
             pass
 
     def toggle_editor(self):
@@ -364,11 +397,15 @@ class Simulator:
     def run(self):
         """Main simulation loop"""
         running = True
-        dt = 1.0 / FPS
+        # Compute real delta-time per frame using pygame Clock.tick.
+        # We'll call tick at the top of the loop so dt reflects the time
+        # since the previous iteration.
         dragging = False
         drag_start = None
-
         while running:
+            # dt in seconds (time elapsed since last call to tick)
+            dt_ms = self.clock.tick(FPS)
+            dt = dt_ms / 1000.0
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
@@ -680,43 +717,25 @@ class Simulator:
                 # command is present, it overrides keyboard inputs. If not,
                 # manual keyboard driving remains active (do not attempt internal
                 # trajectory following).
-                latest_ack = None
-                try:
-                    latest_ack = self.pose_publisher.get_latest_ack()
-                except Exception:
-                    latest_ack = None
+                latest_ack = self.pose_publisher.get_latest_ack()
 
                 if latest_ack is not None:
                     # Only accept ack commands if they are recent (avoid stale control).
-                    age = None
-                    try:
-                        age = self.pose_publisher.ack_age_seconds()
-                    except Exception:
-                        age = None
+                    age = self.pose_publisher.ack_age_seconds()   
                     if age is not None and age > 1.0:
                         # message too old; ignore
-                        try:
-                            self.pose_publisher.get_logger().info(f'Ignoring stale AckermannDrive (age={age:.2f}s)')
-                        except Exception:
-                            pass
+                        self.pose_publisher.get_logger().info(f'Ignoring stale AckermannDrive (age={age:.2f}s)')
                     else:
                         # Map AckermannDrive -> simulator control inputs
                         target_speed = getattr(latest_ack, 'speed', 0.0)
-                    speed_delta = target_speed - self.vehicle.speed
-                    if abs(speed_delta) < 1e-3:
-                        speed_input = 0
-                    else:
-                        speed_input = max(-1.0, min(1.0, speed_delta / (self.vehicle.throttle_acceleration * dt)))
-
-                        desired_steer = getattr(latest_ack, 'steering_angle', 0.0)
-                        steer_delta = desired_steer - self.vehicle.steering_angle
-                        if abs(steer_delta) < 1e-3:
-                            steer_input = 0
-                        else:
-                            steer_input = max(-1.0, min(1.0, steer_delta / (self.vehicle.steering_rate * dt)))
+                    desired_steer = getattr(latest_ack, 'steering_angle', 0.0)
                 # else: no external command -> keep keyboard inputs (manual driving)
 
-            self.vehicle.update(dt,speed_input,steer_input)
+            # if using traj follower, force input, else do normal input
+            if self.follow_planner and latest_ack is not None:
+                self.vehicle.force_update(dt, target_speed, desired_steer)
+            else:
+                self.vehicle.update(dt, speed_input, steer_input)
 
             colliding_obstacles = self.collision_detector.check_collision(self.vehicle.get_corners(), self.obstacles)
             self.is_colliding = len(colliding_obstacles) > 0
@@ -763,7 +782,6 @@ class Simulator:
             draw_map_selector(self.screen, self)  # Always show map selector
 
             pygame.display.flip()
-            self.clock.tick(FPS)
         pygame.quit()
         self.pose_publisher.destroy_node()
         rclpy.shutdown()

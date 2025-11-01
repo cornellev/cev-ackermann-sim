@@ -110,3 +110,5 @@ log/
 
 # Allow pattern for ignoring all __pycache__ directories
 **/__pycache__/
+
+maps/
