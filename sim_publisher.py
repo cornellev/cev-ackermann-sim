@@ -92,6 +92,12 @@ class VehiclePublisher(Node):
         except Exception:
             self.get_logger().warning('Could not create target publisher')
 
+        # Publisher for simulator-generated trajectory (list of Waypoint)
+        try:
+            self.trajectory_publisher_ = self.create_publisher(Trajectory, 'igvc_waypoints', 10)
+        except Exception:
+            self.get_logger().warning('Could not create igvc_waypoints publisher')
+
     def publish_pose(self, x, y, theta, v, steering_angle):
         msg = PoseStamped()
         # Header
@@ -256,3 +262,51 @@ class VehiclePublisher(Node):
             # self.get_logger().info(f'Published target waypoint: x={x}, y={y}, v={v}, tau={tau}, theta={theta}')
         except Exception as e:
             self.get_logger().debug(f'Failed to publish target: {e}')
+
+    def publish_trajectory(self, waypoints: list):
+        """Publish a list of waypoints as a Trajectory message on 'igvc_waypoints'.
+
+        waypoints: iterable of (x,y) tuples or dict-like objects with 'x','y' fields.
+        """
+        try:
+            if not hasattr(self, 'trajectory_publisher_'):
+                return
+            tmsg = Trajectory()
+            # Ensure we have a list we can extend
+            tmsg.waypoints = []
+            for p in waypoints or []:
+                w = Waypoint()
+                try:
+                    # accept tuple/list or dict/message
+                    if isinstance(p, (list, tuple)):
+                        w.x = float(p[0])
+                        w.y = float(p[1])
+                    elif isinstance(p, dict):
+                        w.x = float(p.get('x', 0.0))
+                        w.y = float(p.get('y', 0.0))
+                    else:
+                        # try attribute access
+                        w.x = float(getattr(p, 'x', 0.0))
+                        w.y = float(getattr(p, 'y', 0.0))
+                except Exception:
+                    # skip malformed waypoint
+                    continue
+                # optional fields if available
+                try:
+                    w.v = float(getattr(p, 'v', 0.0))
+                except Exception:
+                    pass
+                try:
+                    w.tau = float(getattr(p, 'tau', 0.0))
+                except Exception:
+                    pass
+                try:
+                    w.theta = float(getattr(p, 'theta', 0.0))
+                except Exception:
+                    pass
+                tmsg.waypoints.append(w)
+            # publish
+            self.trajectory_publisher_.publish(tmsg)
+            self.get_logger().debug(f'Published igvc_waypoints with {len(tmsg.waypoints)} waypoints')
+        except Exception as e:
+            self.get_logger().debug(f'Failed to publish sim trajectory: {e}')

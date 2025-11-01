@@ -4,7 +4,7 @@ import os
 import json
 import rclpy
 from objects import CircleObstacle, CollisionDetector, PolygonObstacle, LineObstacle
-from obstacle_loader import load_obstacles_from_json
+from sim_map_loader import load_map_file, load_obstacles_from_json
 from constants import *
 from sim_publisher import VehiclePublisher
 from sim_edit import SceneEditor
@@ -268,14 +268,10 @@ class Simulator:
     def load_map(self, map_path):
         """Load a map file and update sim state"""
         try:
-            # Load obstacles
-            self.obstacles = load_obstacles_from_json(map_path)
+            # Load obstacles and scene metadata (start/goal/waypoints)
+            self.obstacles, scene_obj = load_map_file(map_path)
             self.current_map = os.path.basename(map_path)
-            
-            # Load start/goal and update vehicle
-            with open(map_path, 'r') as fh:
-                scene_obj = json.load(fh)
-                
+
             # Get start pose and update vehicle
             start = scene_obj.get('start', None)
             if start is not None:
@@ -295,6 +291,22 @@ class Simulator:
                 self.target_pose = (gx, gy, gtheta)
             else:
                 self.target_pose = None
+
+            # Load waypoints from scene JSON (if present)
+            try:
+                wps = scene_obj.get('waypoints', None)
+                if wps is None:
+                    self.waypoints = []
+                else:
+                    self.waypoints = [(float(p.get('x', 0.0)), float(p.get('y', 0.0))) for p in wps]
+            except Exception:
+                self.waypoints = []
+            # Publish loaded waypoints as a trajectory
+            try:
+                if getattr(self, 'pose_publisher', None) is not None:
+                    self.pose_publisher.publish_trajectory(self.waypoints)
+            except Exception:
+                pass
             
             # Publish updates
             self.pose_publisher.publish_occupancy_grid(self.obstacles)
@@ -341,6 +353,11 @@ class Simulator:
             self.editor.obstacles = self.obstacles.copy()
             self.editor.camera_x = self.vehicle.x
             self.editor.camera_y = self.vehicle.y
+            # sync waypoints into editor
+            try:
+                self.editor.waypoints = list(getattr(self, 'waypoints', []) or [])
+            except Exception:
+                self.editor.waypoints = []
             # Sync start/goal into editor so they can be moved
             try:
                 self.editor.start_pose = tuple(self.start_pose)
@@ -350,6 +367,16 @@ class Simulator:
         else:
             # Copy obstacles back from editor
             self.obstacles = self.editor.obstacles.copy()
+            # Copy waypoints back
+            try:
+                self.waypoints = list(getattr(self.editor, 'waypoints', []) or [])
+                try:
+                    if getattr(self, 'pose_publisher', None) is not None:
+                        self.pose_publisher.publish_trajectory(self.waypoints)
+                except Exception:
+                    pass
+            except Exception:
+                self.waypoints = []
             # Copy start/goal back from editor
             try:
                 self.start_pose = tuple(self.editor.start_pose)
@@ -505,69 +532,164 @@ class Simulator:
                                         except Exception:
                                             pass
                                 wx, wy = screen_to_world(mx, my, self.editor.camera_x, self.editor.camera_y)
-                                # If we're in placing mode, handle two-step anchor+angle
-                                if getattr(self.editor, 'placing_start', False):
-                                    # If anchor is not set yet, set anchor (bulb) and enter angling phase
-                                    if self.editor.placing_start_anchor is None:
-                                        self.editor.placing_start_anchor = (wx, wy)
-                                        self.editor.placing_start_angling = True
-                                    elif self.editor.placing_start_angling:
-                                        # finalize using vector from anchor to this click
-                                        ax, ay = self.editor.placing_start_anchor
-                                        theta = math.atan2(wy - ay, wx - ax)
-                                        self.editor.start_pose = (ax, ay, theta)
-                                        self.editor.placing_start = False
-                                        self.editor.placing_start_anchor = None
-                                        self.editor.placing_start_angling = False
-                                elif getattr(self.editor, 'placing_goal', False):
-                                    if self.editor.placing_goal_anchor is None:
-                                        self.editor.placing_goal_anchor = (wx, wy)
-                                        self.editor.placing_goal_angling = True
-                                    elif self.editor.placing_goal_angling:
-                                        ax, ay = self.editor.placing_goal_anchor
-                                        theta = math.atan2(wy - ay, wx - ax)
-                                        self.editor.goal_pose = (ax, ay, theta)
-                                        self.editor.placing_goal = False
-                                        self.editor.placing_goal_anchor = None
-                                        self.editor.placing_goal_angling = False
+                                # If remove tool is active, attempt to delete an obstacle or waypoint
+                                if self.editor.selected_tool == 'remove':
+                                    removed = False
+                                    try:
+                                        # Prefer removing obstacles first (circle, polygon, line)
+                                        for idx, obs in enumerate(list(self.editor.obstacles)):
+                                            if isinstance(obs, CircleObstacle):
+                                                if self.editor.is_near_point(wx, wy, obs.x, obs.y):
+                                                    del self.editor.obstacles[idx]
+                                                    removed = True
+                                                    break
+                                            elif isinstance(obs, PolygonObstacle):
+                                                xs = [v[0] for v in obs.vertices]
+                                                ys = [v[1] for v in obs.vertices]
+                                                if (min(xs) - 0.2) <= wx <= (max(xs) + 0.2) and (min(ys) - 0.2) <= wy <= (max(ys) + 0.2):
+                                                    del self.editor.obstacles[idx]
+                                                    removed = True
+                                                    break
+                                            elif isinstance(obs, LineObstacle):
+                                                xs = [v[0] for v in obs.vertices]
+                                                ys = [v[1] for v in obs.vertices]
+                                                if (min(xs) - 0.2) <= wx <= (max(xs) + 0.2) and (min(ys) - 0.2) <= wy <= (max(ys) + 0.2):
+                                                    del self.editor.obstacles[idx]
+                                                    removed = True
+                                                    break
+                                    except Exception:
+                                        removed = False
+
+                                    if not removed:
+                                        # Try removing a waypoint (this will renumber by shifting list indices)
+                                        try:
+                                            wps = getattr(self.editor, 'waypoints', []) or []
+                                            for i, (wxp, wyp) in enumerate(list(wps)):
+                                                if self.editor.is_near_point(wx, wy, wxp, wyp):
+                                                    # delete and normalize list
+                                                    del self.editor.waypoints[i]
+                                                    # adjust moving index if needed
+                                                    try:
+                                                        if getattr(self.editor, 'moving_waypoint_idx', None) is not None:
+                                                            if self.editor.moving_waypoint_idx == i:
+                                                                self.editor.moving_waypoint_idx = None
+                                                            elif self.editor.moving_waypoint_idx > i:
+                                                                self.editor.moving_waypoint_idx -= 1
+                                                    except Exception:
+                                                        self.editor.moving_waypoint_idx = None
+                                                    # ensure list contains only tuples and is compact
+                                                    try:
+                                                        self.editor.waypoints = [(float(px), float(py)) for px, py in self.editor.waypoints]
+                                                    except Exception:
+                                                        # fallback to empty list on error
+                                                        self.editor.waypoints = []
+                                                    removed = True
+                                                    break
+                                        except Exception:
+                                            pass
+                                    # after a successful remove, publish updated trajectory
+                                    if removed:
+                                        try:
+                                            if getattr(self, 'pose_publisher', None) is not None:
+                                                self.pose_publisher.publish_trajectory(getattr(self.editor, 'waypoints', []) or [])
+                                        except Exception:
+                                            pass
+                                    # Done handling remove tool
+                                    continue
+
+                                # If waypoint tool is active, place waypoint immediately
+                                if self.editor.selected_tool == 'waypoint':
+                                    if not hasattr(self.editor, 'waypoints') or self.editor.waypoints is None:
+                                        self.editor.waypoints = []
+                                    # append new waypoint and normalize list
+                                    try:
+                                        self.editor.waypoints.append((float(wx), float(wy)))
+                                        self.editor.waypoints = [(float(px), float(py)) for px, py in self.editor.waypoints]
+                                    except Exception:
+                                        # ensure we at least have a valid list
+                                        self.editor.waypoints = [(float(wx), float(wy))]
+                                    # publish updated trajectory
+                                    try:
+                                        if getattr(self, 'pose_publisher', None) is not None:
+                                            self.pose_publisher.publish_trajectory(getattr(self.editor, 'waypoints', []) or [])
+                                    except Exception:
+                                        pass
                                 else:
-                                    # Normal tool operations
-                                    if self.editor.selected_tool == 'circle':
-                                        self.editor.obstacles.append(CircleObstacle(wx, wy, self.editor.obstacle_size))
-                                    elif self.editor.selected_tool == 'line':
-                                        if self.editor.line_start is None:
-                                            self.editor.line_start = (wx, wy)
-                                        else:
-                                            self.editor.obstacles.append(LineObstacle(self.editor.line_start, (wx, wy), self.editor.obstacle_size))
-                                            self.editor.line_start = None
-                                    elif self.editor.selected_tool == 'polygon':
-                                        if len(self.editor.temp_polygon) >= 3:
-                                            start_x, start_y = self.editor.temp_polygon[0]
-                                            if self.editor.is_near_point(wx, wy, start_x, start_y):
-                                                self.editor.obstacles.append(PolygonObstacle(self.editor.temp_polygon, RED))
-                                                self.editor.temp_polygon = []
+                                    # If we're in placing mode, handle two-step anchor+angle
+                                    if getattr(self.editor, 'placing_start', False):
+                                        # If anchor is not set yet, set anchor (bulb) and enter angling phase
+                                        if self.editor.placing_start_anchor is None:
+                                            self.editor.placing_start_anchor = (wx, wy)
+                                            self.editor.placing_start_angling = True
+                                        elif self.editor.placing_start_angling:
+                                            # finalize using vector from anchor to this click
+                                            ax, ay = self.editor.placing_start_anchor
+                                            theta = math.atan2(wy - ay, wx - ax)
+                                            self.editor.start_pose = (ax, ay, theta)
+                                            self.editor.placing_start = False
+                                            self.editor.placing_start_anchor = None
+                                            self.editor.placing_start_angling = False
+                                    elif getattr(self.editor, 'placing_goal', False):
+                                        if self.editor.placing_goal_anchor is None:
+                                            self.editor.placing_goal_anchor = (wx, wy)
+                                            self.editor.placing_goal_angling = True
+                                        elif self.editor.placing_goal_angling:
+                                            ax, ay = self.editor.placing_goal_anchor
+                                            theta = math.atan2(wy - ay, wx - ax)
+                                            self.editor.goal_pose = (ax, ay, theta)
+                                            self.editor.placing_goal = False
+                                            self.editor.placing_goal_anchor = None
+                                            self.editor.placing_goal_angling = False
+                                    else:
+                                        # Normal tool operations
+                                        if self.editor.selected_tool == 'circle':
+                                            self.editor.obstacles.append(CircleObstacle(wx, wy, self.editor.obstacle_size))
+                                        elif self.editor.selected_tool == 'line':
+                                            if self.editor.line_start is None:
+                                                self.editor.line_start = (wx, wy)
+                                            else:
+                                                self.editor.obstacles.append(LineObstacle(self.editor.line_start, (wx, wy), self.editor.obstacle_size))
+                                                self.editor.line_start = None
+                                        elif self.editor.selected_tool == 'polygon':
+                                            if len(self.editor.temp_polygon) >= 3:
+                                                start_x, start_y = self.editor.temp_polygon[0]
+                                                if self.editor.is_near_point(wx, wy, start_x, start_y):
+                                                    self.editor.obstacles.append(PolygonObstacle(self.editor.temp_polygon, RED))
+                                                    self.editor.temp_polygon = []
+                                                else:
+                                                    self.editor.temp_polygon.append((wx, wy))
                                             else:
                                                 self.editor.temp_polygon.append((wx, wy))
-                                        else:
-                                            self.editor.temp_polygon.append((wx, wy))
-                                    elif self.editor.selected_tool == 'select':
-                                        self.editor.selected_idx = self.editor.obstacle_at_point(wx, wy)
-                                    elif self.editor.selected_tool == 'move':
-                                        # Start a move operation: prefer selected obstacle if present
-                                        # If clicking near start/goal markers, move them instead
-                                        sel_idx = self.editor.obstacle_at_point(wx, wy)
-                                        if sel_idx is not None:
-                                            self.editor.moving_obs_idx = sel_idx
-                                        else:
-                                            # Check proximity to start/goal
-                                            if self.editor.start_pose is not None and self.editor.is_near_point(wx, wy, self.editor.start_pose[0], self.editor.start_pose[1]):
-                                                self.editor.moving_start = True
-                                            elif self.editor.goal_pose is not None and self.editor.is_near_point(wx, wy, self.editor.goal_pose[0], self.editor.goal_pose[1]):
-                                                self.editor.moving_goal = True
+                                        elif self.editor.selected_tool == 'select':
+                                            self.editor.selected_idx = self.editor.obstacle_at_point(wx, wy)
+                                        elif self.editor.selected_tool == 'move':
+                                            # Start a move operation: prefer selected obstacle if present
+                                            # If clicking near start/goal markers, move them instead
+                                            sel_idx = self.editor.obstacle_at_point(wx, wy)
+                                            if sel_idx is not None:
+                                                self.editor.moving_obs_idx = sel_idx
                                             else:
-                                                # Otherwise start panning drag
-                                                self.editor.dragging = True
-                                                self.editor.drag_last = (mx, my)
+                                                # Check proximity to start/goal
+                                                if self.editor.start_pose is not None and self.editor.is_near_point(wx, wy, self.editor.start_pose[0], self.editor.start_pose[1]):
+                                                    self.editor.moving_start = True
+                                                elif self.editor.goal_pose is not None and self.editor.is_near_point(wx, wy, self.editor.goal_pose[0], self.editor.goal_pose[1]):
+                                                    self.editor.moving_goal = True
+                                                else:
+                                                    # Check if clicking near a waypoint to move it
+                                                    moved_wp = None
+                                                    try:
+                                                        for i, (wxp, wyp) in enumerate(getattr(self.editor, 'waypoints', []) or []):
+                                                            if self.editor.is_near_point(wx, wy, wxp, wyp):
+                                                                moved_wp = i
+                                                                break
+                                                    except Exception:
+                                                        moved_wp = None
+                                                    if moved_wp is not None:
+                                                        self.editor.moving_waypoint_idx = moved_wp
+                                                    else:
+                                                        # Otherwise start panning drag
+                                                        self.editor.dragging = True
+                                                        self.editor.drag_last = (mx, my)
                             # Done handling edit-mode click
                             continue
 
@@ -592,6 +714,7 @@ class Simulator:
                         self.editor.moving_obs_idx = None
                         self.editor.moving_start = False
                         self.editor.moving_goal = False
+                        self.editor.moving_waypoint_idx = None
                     
                 elif event.type == pygame.MOUSEMOTION:
                     if self.edit_mode:  
@@ -635,6 +758,13 @@ class Simulator:
                                     self.editor.camera_x -= dx
                                     self.editor.camera_y -= dy
                                     self.editor.drag_last = event.pos
+                                elif getattr(self.editor, 'moving_waypoint_idx', None) is not None:
+                                    wx, wy = screen_to_world(event.pos[0], event.pos[1], self.editor.camera_x, self.editor.camera_y)
+                                    try:
+                                        idx = self.editor.moving_waypoint_idx
+                                        self.editor.waypoints[idx] = (wx, wy)
+                                    except Exception:
+                                        pass
                             elif self.editor.selected_tool == 'select' and self.editor.selected_idx is not None:
                                 # Move selected obstacle
                                 wx, wy = screen_to_world(event.pos[0], event.pos[1], self.editor.camera_x, self.editor.camera_y)
@@ -776,6 +906,21 @@ class Simulator:
                 # Obstacles and start/goal
                 draw_obstacles(self.screen, self.obstacles, self.camera_x, self.camera_y)
                 draw_start_goal(self.screen, self.start_pose, self.target_pose, self.camera_x, self.camera_y)
+                # Draw waypoints in sim view as numbered green circles
+                try:
+                    for i, (x, y) in enumerate(getattr(self, 'waypoints', []) or []):
+                        sx, sy = world_to_screen(x, y, self.camera_x, self.camera_y)
+                        radius = 12
+                        pygame.draw.circle(self.screen, GREEN, (sx, sy), radius)
+                        try:
+                            label = str(i + 1)
+                            txt = self.font.render(label, True, BLACK)
+                            txt_rect = txt.get_rect(center=(sx, sy))
+                            self.screen.blit(txt, txt_rect)
+                        except Exception:
+                            pygame.draw.circle(self.screen, BLACK, (sx, sy), 3)
+                except Exception:
+                    pass
                 # Planner trajectory
                 draw_planner_trajectory(self.screen, self)
                 

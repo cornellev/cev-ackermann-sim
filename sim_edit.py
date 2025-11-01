@@ -3,7 +3,7 @@ import math
 import json
 import os
 from objects import CircleObstacle, PolygonObstacle, LineObstacle
-from obstacle_loader import load_obstacles_from_json
+from sim_map_loader import load_map_file
 from constants import *
 from draw import *
 
@@ -18,14 +18,28 @@ class SceneEditor:
         self.dragging = False
         self.drag_last = None
         self.obstacles = []
+        # list of waypoint tuples [(x,y), ...] or empty list
+        self.waypoints = []
         
         if scene_path:
             try:
-                loaded = load_obstacles_from_json(scene_path)
+                loaded, scene_obj = load_map_file(scene_path)
                 self.obstacles = loaded
             except Exception:
-                # ignore and start empty
-                pass
+                # ignore and start empty; ensure scene_obj exists for downstream
+                scene_obj = {}
+                self.obstacles = []
+
+            # attempt to load waypoints from scene JSON (if present)
+            try:
+                wps = scene_obj.get('waypoints', None)
+                if wps is None:
+                    self.waypoints = []
+                else:
+                    self.waypoints = [(float(p.get('x', 0.0)), float(p.get('y', 0.0))) for p in wps]
+            except Exception:
+                # ignore missing/invalid waypoints
+                self.waypoints = []
 
         # default tool: move (1)
         self.selected_tool = 'move'  # move, select, circle, line, polygon
@@ -53,6 +67,8 @@ class SceneEditor:
         self.moving_start = False
         self.moving_goal = False
         self.moving_obs_idx = None
+        # waypoint move state: index being moved or None
+        self.moving_waypoint_idx = None
         
         # Top-right buttons setup
         padding = 10
@@ -136,6 +152,12 @@ class SceneEditor:
                         'width': math.hypot(v[0][0]-v[1][0], v[0][1]-v[1][1]),
                         'color': obs.color
                     })
+
+            # Waypoints (list of {x,y}) or null when empty
+            if getattr(self, 'waypoints', None) and len(self.waypoints) > 0:
+                scene['waypoints'] = [{'x': float(x), 'y': float(y)} for x, y in self.waypoints]
+            else:
+                scene['waypoints'] = None
             
             # Create directories if needed
             maps_dir = os.path.dirname(map_path)
@@ -170,6 +192,25 @@ class SceneEditor:
         # Start/Goal (shared util)
         try:
             draw_start_goal(self.screen, self.start_pose, self.goal_pose, self.camera_x, self.camera_y)
+        except Exception:
+            pass
+
+        # Waypoints: draw numbered green circles (1..N)
+        try:
+            for i, (x, y) in enumerate(getattr(self, 'waypoints', []) or []):
+                sx, sy = world_to_screen(x, y, self.camera_x, self.camera_y)
+                radius = 12
+                # circle background
+                pygame.draw.circle(self.screen, GREEN, (sx, sy), radius)
+                # waypoint number (1-based)
+                try:
+                    label = str(i + 1)
+                    txt = self.font.render(label, True, BLACK)
+                    txt_rect = txt.get_rect(center=(sx, sy))
+                    self.screen.blit(txt, txt_rect)
+                except Exception:
+                    # if font render fails, fallback to small dot
+                    pygame.draw.circle(self.screen, BLACK, (sx, sy), 3)
         except Exception:
             pass
 

@@ -71,8 +71,9 @@ def draw_toolbox(surface, editor):
     # Tool buttons layout
     pairs = [
         ('move', 'select'),
+        ('remove', None),
         ('circle', 'line'),
-        ('polygon', None),
+        ('polygon', 'waypoint'),
         ('start_marker', 'goal_marker')
     ]
     col_w = 160
@@ -87,7 +88,7 @@ def draw_toolbox(surface, editor):
     # Button labels
     label_map = {'move': 'Move', 'select': 'Select', 'circle': 'Cones', 
                  'line': 'Lanes', 'polygon': 'Polygon', 'start_marker': 'Start Marker', 
-                 'goal_marker': 'Goal Marker'}
+                 'goal_marker': 'Goal Marker', 'waypoint': 'Waypoint', 'remove': 'Remove'}
 
     # Draw tool buttons
     for i, (top, bot) in enumerate(pairs):
