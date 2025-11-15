@@ -20,15 +20,18 @@ class SceneEditor:
         self.obstacles = []
         # list of waypoint tuples [(x,y), ...] or empty list
         self.waypoints = []
+        self.lane_centerline = []
         
         if scene_path:
             try:
                 loaded, scene_obj = load_map_file(scene_path)
                 self.obstacles = loaded
+                self.lane_centerline = scene_obj.get('lane_centerline') or []
             except Exception:
                 # ignore and start empty; ensure scene_obj exists for downstream
                 scene_obj = {}
                 self.obstacles = []
+                self.lane_centerline = []
 
             # attempt to load waypoints from scene JSON (if present)
             try:
@@ -40,6 +43,8 @@ class SceneEditor:
             except Exception:
                 # ignore missing/invalid waypoints
                 self.waypoints = []
+        else:
+            self.lane_centerline = []
 
         # default tool: move (1)
         self.selected_tool = 'move'  # move, select, circle, line, polygon
@@ -97,6 +102,19 @@ class SceneEditor:
     def is_near_point(self, x1, y1, x2, y2, threshold=0.5):
         """Check if two points are within threshold distance"""
         return math.hypot(x1 - x2, y1 - y2) <= threshold
+
+    def lane_points(self):
+        """Return lane centerline points as tuples for drawing."""
+        pts = []
+        for pt in getattr(self, 'lane_centerline', []) or []:
+            try:
+                if isinstance(pt, dict):
+                    pts.append((float(pt.get('x', 0.0)), float(pt.get('y', 0.0))))
+                elif isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                    pts.append((float(pt[0]), float(pt[1])))
+            except Exception:
+                continue
+        return pts
         
     def save_map(self, map_path, vehicle_pos=None, target_pos=None):
         """Save current scene to a map file.
@@ -159,6 +177,10 @@ class SceneEditor:
             else:
                 scene['waypoints'] = None
             
+            lane_centerline = getattr(self, 'lane_centerline', None)
+            if lane_centerline and len(lane_centerline) > 0:
+                scene['lane_centerline'] = lane_centerline
+
             # Create directories if needed
             maps_dir = os.path.dirname(map_path)
             if maps_dir and not os.path.exists(maps_dir):
@@ -188,6 +210,10 @@ class SceneEditor:
 
         # Obstacles
         draw_obstacles(self.screen, self.obstacles, self.camera_x, self.camera_y)
+        try:
+            draw_lane_centerline(self.screen, self.lane_points(), None, self.camera_x, self.camera_y)
+        except Exception:
+            pass
 
         # Start/Goal (shared util)
         try:

@@ -1,6 +1,56 @@
 import pygame
 import math
+import numpy as np
 from constants import *
+
+
+class CubicPolynomial:
+    """Least-squares cubic fit y ≈ a3 x^3 + a2 x^2 + a1 x + a0."""
+
+    def __init__(self):
+        self.a3 = 0.0
+        self.a2 = 0.0
+        self.a1 = 0.0
+        self.a0 = 0.0
+        self.valid = False
+
+    def fit(self, points):
+        """Fit coefficients from a list of (x, y) tuples."""
+        if not points or len(points) < 4:
+            self.valid = False
+            return False
+
+        rows = []
+        values = []
+        for x, y in points:
+            if not (math.isfinite(x) and math.isfinite(y)):
+                continue
+            rows.append([x ** 3, x ** 2, x, 1.0])
+            values.append(y)
+
+        if len(rows) < 4:
+            self.valid = False
+            return False
+
+        A = np.asarray(rows, dtype=float)
+        b = np.asarray(values, dtype=float)
+        try:
+            coeffs, *_ = np.linalg.lstsq(A, b, rcond=None)
+        except np.linalg.LinAlgError:
+            self.valid = False
+            return False
+
+        self.a3, self.a2, self.a1, self.a0 = coeffs
+        self.valid = True
+        return True
+
+    def at(self, x):
+        """Evaluate polynomial at x."""
+        return ((self.a3 * x + self.a2) * x + self.a1) * x + self.a0
+
+    def deriv(self, x):
+        """Derivative dy/dx at x."""
+        return (3.0 * self.a3 * x + 2.0 * self.a2) * x + self.a1
 
 
 def world_to_screen(x, y, camera_x, camera_y):
@@ -56,6 +106,71 @@ def draw_obstacles(surface, obstacles, camera_x, camera_y):
     for obs in obstacles:
         if hasattr(obs, 'draw'):
             obs.draw(surface, _w2s)
+
+
+def draw_lane_centerline(surface, lane_points, vehicle, camera_x, camera_y, max_points=6):
+    """Render lane centerline starting from the closest point in front of the vehicle."""
+    if not lane_points:
+        return
+
+    start_idx = 0
+    if vehicle is not None and lane_points:
+        min_dist = float('inf')
+        for idx, (x, y) in enumerate(lane_points):
+            dx = x - vehicle.x
+            dy = y - vehicle.y
+            dist = dx * dx + dy * dy
+            if dist < min_dist:
+                min_dist = dist
+                start_idx = idx
+
+    end_idx = min(len(lane_points), start_idx + max_points)
+    if start_idx >= end_idx:
+        start_idx = max(0, len(lane_points) - max_points)
+        end_idx = len(lane_points)
+
+    subset = lane_points[start_idx:end_idx]
+    for p in [world_to_screen(x, y, camera_x, camera_y) for x, y in subset]:
+        try:
+            pygame.draw.circle(surface, GREEN, p, 4)
+        except Exception:
+            pass
+
+    cubic = CubicPolynomial()
+    if not cubic.fit(subset):
+        return
+
+    xs = [x for x, _ in subset if math.isfinite(x)]
+    if len(xs) < 2:
+        return
+
+    min_x = min(xs)
+    max_x = max(xs)
+    if math.isclose(min_x, max_x, rel_tol=1e-6, abs_tol=1e-6):
+        return
+
+    span = max_x - min_x
+    # Draw the polynomial beyond just the fitted samples so the full curve is visible.
+    extend = max(span, 3.0)
+    view_half_width = SCREEN_WIDTH / (2.0 * SCALE)
+    draw_min = min(min_x - extend, camera_x - view_half_width - 2.0)
+    draw_max = max(max_x + extend, camera_x + view_half_width + 2.0)
+
+    render_span = max(draw_max - draw_min, 1e-6)
+    step = max(render_span / 120.0, 0.05)
+    samples = []
+    t = draw_min
+    while t <= draw_max + 1e-6:
+        y = cubic.at(t)
+        samples.append(world_to_screen(t, y, camera_x, camera_y))
+        t += step
+    samples.append(world_to_screen(draw_max, cubic.at(draw_max), camera_x, camera_y))
+
+    if len(samples) >= 2:
+        try:
+            pygame.draw.lines(surface, GREEN, False, samples, 2)
+        except Exception:
+            pass
 
 
 def draw_toolbox(surface, editor):

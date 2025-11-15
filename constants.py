@@ -13,6 +13,7 @@ GRAY = (50, 50, 50)
 LIGHT_GRAY = (128, 128, 128)
 YELLOW = (255, 255, 0)
 ORANGE = (255, 165, 0)
+LANE_COLOR = (64, 224, 208)
 cone_radius = 0.23  # meters
 ANGLE_PREVIEW_LENGTH = 0.75  # meters for the angling preview line
 

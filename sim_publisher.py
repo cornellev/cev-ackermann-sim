@@ -1,11 +1,13 @@
 import math
 import time
+import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
 from geometry_msgs.msg import PoseStamped, TransformStamped
 from nav_msgs.msg import OccupancyGrid, MapMetaData, Odometry
 from std_msgs.msg import Header
 from cev_msgs.msg import Waypoint, Trajectory
+from cev_msgs.srv import QueryCostmap
 from tf2_ros import StaticTransformBroadcaster
 from typing import List, Tuple
 
@@ -98,6 +100,21 @@ class VehiclePublisher(Node):
         except Exception:
             self.get_logger().warning('Could not create igvc_waypoints publisher')
 
+        # Publisher for lane centerline visualization
+        try:
+            self.lane_publisher_ = self.create_publisher(Trajectory, 'igvc_lane', 10)
+        except Exception:
+            self.get_logger().warning('Could not create igvc_lane publisher')
+
+        # Service client used for planner costmap queries in debug tools
+        self._costmap_query_service = '/query_costmap'
+        self._costmap_query_timeout = 0.25
+        self._costmap_client = None
+        try:
+            self._costmap_client = self.create_client(QueryCostmap, self._costmap_query_service)
+        except Exception as exc:
+            self.get_logger().debug(f'Unable to create costmap query client: {exc}')
+
     def publish_pose(self, x, y, theta, v, steering_angle):
         msg = PoseStamped()
         # Header
@@ -148,6 +165,49 @@ class VehiclePublisher(Node):
             self.odom_publisher_.publish(odom)
         except Exception as e:
             self.get_logger().debug(f'Failed to publish odometry: {e}')
+
+    def query_costmap(self, x: float, y: float, theta: float = 0.0, timeout_sec: float = None):
+        """Query the planner node's costmap via service for debug visualization."""
+        timeout = timeout_sec if timeout_sec is not None else self._costmap_query_timeout
+        client = self._costmap_client
+        if client is None:
+            try:
+                client = self.create_client(QueryCostmap, self._costmap_query_service)
+                self._costmap_client = client
+            except Exception as exc:
+                self.get_logger().debug(f'Unable to create costmap client: {exc}')
+                return None, 'client_unavailable'
+        try:
+            if not client.service_is_ready():
+                if not client.wait_for_service(timeout_sec=timeout):
+                    return None, 'service_unavailable'
+        except Exception as exc:
+            self.get_logger().debug(f'Costmap service wait failed: {exc}')
+            return None, 'service_unavailable'
+
+        request = QueryCostmap.Request()
+        request.x = float(x)
+        request.y = float(y)
+        request.theta = float(theta)
+
+        future = client.call_async(request)
+        try:
+            rclpy.spin_until_future_complete(self, future, timeout_sec=timeout)
+        except Exception as exc:
+            future.cancel()
+            self.get_logger().debug(f'Costmap query exception: {exc}')
+            return None, 'call_failed'
+
+        if not future.done():
+            future.cancel()
+            return None, 'timeout'
+
+        response = future.result()
+        if response is None:
+            return None, 'service_error'
+        if not response.success:
+            return None, response.message or 'service_rejected'
+        return float(response.cost), None
 
     # Occupancy grid helpers
     def _point_in_polygon(self, x: float, y: float, polygon: List[Tuple[float, float]]) -> bool:
@@ -233,7 +293,7 @@ class VehiclePublisher(Node):
         self.latest_ack_msg = msg
             # store a wall-clock timestamp so callers can know how recent the message is
         self._last_ack_time = time.time()
-        self.get_logger().info('Received AckermannDrive from external follower')
+        # self.get_logger().info('Received AckermannDrive from external follower')
 
     def get_latest_ack(self):
         return self.latest_ack_msg
@@ -263,50 +323,55 @@ class VehiclePublisher(Node):
         except Exception as e:
             self.get_logger().debug(f'Failed to publish target: {e}')
 
-    def publish_trajectory(self, waypoints: list):
-        """Publish a list of waypoints as a Trajectory message on 'igvc_waypoints'.
+    def _waypoints_to_trajectory(self, waypoints: list) -> Trajectory:
+        """Convert a heterogenous waypoint list into a Trajectory message."""
+        tmsg = Trajectory()
+        tmsg.waypoints = []
+        for p in waypoints or []:
+            w = Waypoint()
+            try:
+                if isinstance(p, (list, tuple)):
+                    w.x = float(p[0])
+                    w.y = float(p[1])
+                elif isinstance(p, dict):
+                    w.x = float(p.get('x', 0.0))
+                    w.y = float(p.get('y', 0.0))
+                else:
+                    w.x = float(getattr(p, 'x', 0.0))
+                    w.y = float(getattr(p, 'y', 0.0))
+            except Exception:
+                continue
+            for attr in ('v', 'tau', 'theta'):
+                try:
+                    if isinstance(p, dict):
+                        val = p.get(attr, None)
+                    else:
+                        val = getattr(p, attr, None)
+                    if val is not None:
+                        setattr(w, attr, float(val))
+                except Exception:
+                    pass
+            tmsg.waypoints.append(w)
+        return tmsg
 
-        waypoints: iterable of (x,y) tuples or dict-like objects with 'x','y' fields.
-        """
+    def publish_trajectory(self, waypoints: list):
+        """Publish a list of waypoints as a Trajectory message on 'igvc_waypoints'."""
         try:
             if not hasattr(self, 'trajectory_publisher_'):
                 return
-            tmsg = Trajectory()
-            # Ensure we have a list we can extend
-            tmsg.waypoints = []
-            for p in waypoints or []:
-                w = Waypoint()
-                try:
-                    # accept tuple/list or dict/message
-                    if isinstance(p, (list, tuple)):
-                        w.x = float(p[0])
-                        w.y = float(p[1])
-                    elif isinstance(p, dict):
-                        w.x = float(p.get('x', 0.0))
-                        w.y = float(p.get('y', 0.0))
-                    else:
-                        # try attribute access
-                        w.x = float(getattr(p, 'x', 0.0))
-                        w.y = float(getattr(p, 'y', 0.0))
-                except Exception:
-                    # skip malformed waypoint
-                    continue
-                # optional fields if available
-                try:
-                    w.v = float(getattr(p, 'v', 0.0))
-                except Exception:
-                    pass
-                try:
-                    w.tau = float(getattr(p, 'tau', 0.0))
-                except Exception:
-                    pass
-                try:
-                    w.theta = float(getattr(p, 'theta', 0.0))
-                except Exception:
-                    pass
-                tmsg.waypoints.append(w)
-            # publish
+            tmsg = self._waypoints_to_trajectory(waypoints)
             self.trajectory_publisher_.publish(tmsg)
             self.get_logger().debug(f'Published igvc_waypoints with {len(tmsg.waypoints)} waypoints')
         except Exception as e:
             self.get_logger().debug(f'Failed to publish sim trajectory: {e}')
+
+    def publish_lane_centerline(self, lane_points: list):
+        """Publish the lane centerline on the /igvc_lane topic."""
+        try:
+            if not hasattr(self, 'lane_publisher_'):
+                return
+            tmsg = self._waypoints_to_trajectory(lane_points)
+            self.lane_publisher_.publish(tmsg)
+            self.get_logger().debug(f'Published igvc_lane with {len(tmsg.waypoints)} points')
+        except Exception as e:
+            self.get_logger().debug(f'Failed to publish lane centerline: {e}')
