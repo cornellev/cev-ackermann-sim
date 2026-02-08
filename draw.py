@@ -12,6 +12,12 @@ class CubicPolynomial:
         self.a2 = 0.0
         self.a1 = 0.0
         self.a0 = 0.0
+        self.x0 = 0.0
+        self.y0 = 0.0
+        self.m0 = 0.0
+        self.x1 = 0.0
+        self.y1 = 0.0
+        self.m1 = 0.0
         self.valid = False
 
     def fit(self, points):
@@ -22,11 +28,13 @@ class CubicPolynomial:
 
         rows = []
         values = []
+        clean_pts = []
         for x, y in points:
             if not (math.isfinite(x) and math.isfinite(y)):
                 continue
             rows.append([x ** 3, x ** 2, x, 1.0])
             values.append(y)
+            clean_pts.append((x, y))
 
         if len(rows) < 4:
             self.valid = False
@@ -41,16 +49,30 @@ class CubicPolynomial:
             return False
 
         self.a3, self.a2, self.a1, self.a0 = coeffs
+
+        # Cache endpoint info for straight-end extrapolation
+        self.x0, self.y0 = clean_pts[0]
+        self.x1, self.y1 = clean_pts[-1]
+        self.m0 = self.deriv(self.x0)
+        self.m1 = self.deriv(self.x1)
         self.valid = True
         return True
 
-    def at(self, x):
-        """Evaluate polynomial at x."""
+    def cubic(self, x):
+        """Evaluate polynomial within [x0, x1]."""
         return ((self.a3 * x + self.a2) * x + self.a1) * x + self.a0
 
     def deriv(self, x):
         """Derivative dy/dx at x."""
         return (3.0 * self.a3 * x + 2.0 * self.a2) * x + self.a1
+
+    def at(self, x):
+        """Straight ends: linear extrapolation beyond endpoints."""
+        if x <= self.x0:
+            return self.y0 + self.m0 * (x - self.x0)
+        if x >= self.x1:
+            return self.y1 + self.m1 * (x - self.x1)
+        return self.cubic(x)
 
 
 def world_to_screen(x, y, camera_x, camera_y):
@@ -264,6 +286,7 @@ def draw_map_selector(surface, sim):
         return
     dropdown_rect = getattr(sim, 'dropdown_rect', pygame.Rect(SCREEN_WIDTH - 220, 10, 150, 30))
     edit_button_rect = getattr(sim, 'edit_button_rect', pygame.Rect(SCREEN_WIDTH - 60, 10, 50, 30))
+    distance_button_rect = getattr(sim, 'distance_button_rect', None)
     font = getattr(sim, 'font', pygame.font.SysFont('monospace', 18))
     # Draw dropdown button
     pygame.draw.rect(surface, DROPDOWN_BG, dropdown_rect)
@@ -288,6 +311,15 @@ def draw_map_selector(surface, sim):
     text = font.render('Edit', True, WHITE)
     text_rect = text.get_rect(center=edit_button_rect.center)
     surface.blit(text, text_rect)
+
+    # Draw distance toggle button if present
+    if distance_button_rect is not None:
+        is_active = bool(getattr(sim, 'distance_measure_enabled', False))
+        btn_color = BTN_ACTIVE if is_active else BTN_INACTIVE
+        pygame.draw.rect(surface, btn_color, distance_button_rect)
+        text = font.render('Dist', True, WHITE)
+        text_rect = text.get_rect(center=distance_button_rect.center)
+        surface.blit(text, text_rect)
 
 
 def draw_wheel(surface, center_x, center_y, width, length, wheel_angle, camera_x, camera_y):
@@ -423,3 +455,67 @@ def draw_planner_trajectory(surface, sim):
             pygame.draw.circle(surface, YELLOW, p, 4)
         except Exception:
             pass
+
+
+def draw_planner_ghosts(surface, sim):
+    """
+    Project translucent car footprints along the latest planner trajectory.
+    Useful to visualize intended heading/curvature at each waypoint.
+    """
+    try:
+        traj_msg = getattr(sim.pose_publisher, 'latest_trajectory_msg', None)
+    except Exception:
+        return
+    if traj_msg is None:
+        return
+
+    # Pull vehicle geometry
+    vehicle = getattr(sim, 'vehicle', None)
+    length = getattr(vehicle, 'length', 0.9)
+    width = getattr(vehicle, 'width', 0.6)
+    half_l = length * 0.5
+    half_w = width * 0.5
+
+    def corners(x, y, theta):
+        ct = math.cos(theta)
+        st = math.sin(theta)
+        pts = [
+            (half_l, half_w),
+            (half_l, -half_w),
+            (-half_l, -half_w),
+            (-half_l, half_w),
+        ]
+        out = []
+        for px, py in pts:
+            wx = x + px * ct - py * st
+            wy = y + px * st + py * ct
+            out.append(world_to_screen(wx, wy, sim.camera_x, sim.camera_y))
+        return out
+
+    ghost = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
+    try:
+        waypoints = list(getattr(traj_msg, 'waypoints', []) or [])
+    except Exception:
+        return
+    if not waypoints:
+        return
+
+    # Sample every Nth waypoint to reduce clutter
+    step = max(1, len(waypoints) // 12)
+    for idx in range(0, len(waypoints), step):
+        wp = waypoints[idx]
+        x = getattr(wp, 'x', None)
+        y = getattr(wp, 'y', None)
+        theta = getattr(wp, 'theta', None)
+        if x is None or y is None or theta is None:
+            continue
+        pts = corners(x, y, theta)
+        alpha = int(200 * (1.0 - (idx / float(len(waypoints)))))
+        color = (0, 200, 255, max(40, min(200, alpha)))
+        try:
+            pygame.draw.polygon(ghost, color, pts)
+            pygame.draw.polygon(ghost, (0, 120, 180, color[3]), pts, width=1)
+        except Exception:
+            continue
+
+    surface.blit(ghost, (0, 0))

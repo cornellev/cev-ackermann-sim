@@ -1,13 +1,11 @@
 import math
 import time
-import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
 from geometry_msgs.msg import PoseStamped, TransformStamped
 from nav_msgs.msg import OccupancyGrid, MapMetaData, Odometry
-from std_msgs.msg import Header
+from std_msgs.msg import Header, Float32MultiArray
 from cev_msgs.msg import Waypoint, Trajectory
-from cev_msgs.srv import QueryCostmap
 from tf2_ros import StaticTransformBroadcaster
 from typing import List, Tuple
 
@@ -41,7 +39,6 @@ class VehiclePublisher(Node):
         # publish occupancy grid for simulator viewers and for planner
         self.occ_publisher_ = self.create_publisher(OccupancyGrid, 'sim_occupancy', occ_qos)
         self.map_publisher_ = self.create_publisher(OccupancyGrid, 'map', occ_qos)
-
         # odometry publisher that the planner listens to
         self.odom_publisher_ = self.create_publisher(Odometry, '/odometry/filtered', 10)
 
@@ -106,14 +103,28 @@ class VehiclePublisher(Node):
         except Exception:
             self.get_logger().warning('Could not create igvc_lane publisher')
 
-        # Service client used for planner costmap queries in debug tools
-        self._costmap_query_service = '/query_costmap'
-        self._costmap_query_timeout = 0.25
-        self._costmap_client = None
+        # Live tuning for lane-following MPC cost weights
+        self.cost_weights_pub = None
         try:
-            self._costmap_client = self.create_client(QueryCostmap, self._costmap_query_service)
-        except Exception as exc:
-            self.get_logger().debug(f'Unable to create costmap query client: {exc}')
+            self.cost_weights_pub = self.create_publisher(Float32MultiArray, 'lane_cost_weights', 10)
+        except Exception:
+            self.get_logger().warning('Could not create lane_cost_weights publisher')
+
+        # Subscriptions for planner-generated costmap data (raw float values)
+        self.latest_costmap_data = None
+        self.latest_costmap_meta = None
+        self._costmap_seq = 0
+        try:
+            costmap_qos = QoSProfile(depth=1)
+            costmap_qos.durability = QoSDurabilityPolicy.TRANSIENT_LOCAL
+            costmap_qos.reliability = QoSReliabilityPolicy.RELIABLE
+            self.costmap_meta_sub = self.create_subscription(
+                MapMetaData, 'local_costmap_meta', self._costmap_meta_callback, costmap_qos)
+            self.costmap_raw_sub = self.create_subscription(
+                Float32MultiArray, 'local_costmap_raw', self._costmap_raw_callback, costmap_qos)
+        except Exception:
+            self.get_logger().warning('Could not create costmap subscriptions')
+
 
     def publish_pose(self, x, y, theta, v, steering_angle):
         msg = PoseStamped()
@@ -166,48 +177,29 @@ class VehiclePublisher(Node):
         except Exception as e:
             self.get_logger().debug(f'Failed to publish odometry: {e}')
 
-    def query_costmap(self, x: float, y: float, theta: float = 0.0, timeout_sec: float = None):
-        """Query the planner node's costmap via service for debug visualization."""
-        timeout = timeout_sec if timeout_sec is not None else self._costmap_query_timeout
-        client = self._costmap_client
-        if client is None:
-            try:
-                client = self.create_client(QueryCostmap, self._costmap_query_service)
-                self._costmap_client = client
-            except Exception as exc:
-                self.get_logger().debug(f'Unable to create costmap client: {exc}')
-                return None, 'client_unavailable'
+    def publish_lane_cost_weights(self, weights, target_vel):
+        """
+        Publish MPC lane-following cost weights for live tuning.
+        Ordering matches planner expectation:
+        [w_along_track, w_cte, w_costmap, obs_threshold, cte_threshold, along_threshold, target_vel]
+        """
         try:
-            if not client.service_is_ready():
-                if not client.wait_for_service(timeout_sec=timeout):
-                    return None, 'service_unavailable'
+            if self.cost_weights_pub is None:
+                return
+            msg = Float32MultiArray()
+            msg.data = [
+                float(weights.get("along_track", 0.0)),
+                float(weights.get("cte", 0.0)),
+                float(weights.get("costmap", 0.0)),
+                float(weights.get("obs_threshold", 0.0)),
+                float(weights.get("cte_threshold", 0.0)),
+                float(weights.get("along_threshold", 0.0)),
+                float(target_vel),
+            ]
+            self.cost_weights_pub.publish(msg)
         except Exception as exc:
-            self.get_logger().debug(f'Costmap service wait failed: {exc}')
-            return None, 'service_unavailable'
+            self.get_logger().debug(f'Failed to publish lane_cost_weights: {exc}')
 
-        request = QueryCostmap.Request()
-        request.x = float(x)
-        request.y = float(y)
-        request.theta = float(theta)
-
-        future = client.call_async(request)
-        try:
-            rclpy.spin_until_future_complete(self, future, timeout_sec=timeout)
-        except Exception as exc:
-            future.cancel()
-            self.get_logger().debug(f'Costmap query exception: {exc}')
-            return None, 'call_failed'
-
-        if not future.done():
-            future.cancel()
-            return None, 'timeout'
-
-        response = future.result()
-        if response is None:
-            return None, 'service_error'
-        if not response.success:
-            return None, response.message or 'service_rejected'
-        return float(response.cost), None
 
     # Occupancy grid helpers
     def _point_in_polygon(self, x: float, y: float, polygon: List[Tuple[float, float]]) -> bool:
@@ -295,6 +287,17 @@ class VehiclePublisher(Node):
         self._last_ack_time = time.time()
         # self.get_logger().info('Received AckermannDrive from external follower')
 
+    def _costmap_meta_callback(self, msg):
+        self.latest_costmap_meta = msg
+        self._costmap_seq += 1
+
+    def _costmap_raw_callback(self, msg):
+        self.latest_costmap_data = msg
+        self._costmap_seq += 1
+
+    def costmap_seq(self):
+        return self._costmap_seq
+
     def get_latest_ack(self):
         return self.latest_ack_msg
 
@@ -318,6 +321,12 @@ class VehiclePublisher(Node):
             w.v = float(v)
             w.tau = float(tau)
             w.theta = float(theta)
+            w.cte = 0.0
+            w.along_track = 0.0
+            w.costmap_cost = 0.0
+            w.cte_bad = 0.0
+            w.obs_bad = 0.0
+            w.along_track_penalty = 0.0
             self.target_publisher_.publish(w)
             # self.get_logger().info(f'Published target waypoint: x={x}, y={y}, v={v}, tau={tau}, theta={theta}')
         except Exception as e:
@@ -351,6 +360,12 @@ class VehiclePublisher(Node):
                         setattr(w, attr, float(val))
                 except Exception:
                     pass
+            w.cte = 0.0
+            w.along_track = 0.0
+            w.costmap_cost = 0.0
+            w.cte_bad = 0.0
+            w.obs_bad = 0.0
+            w.along_track_penalty = 0.0
             tmsg.waypoints.append(w)
         return tmsg
 
