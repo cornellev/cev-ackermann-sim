@@ -1,6 +1,5 @@
 import math
 import time
-<<<<<<< HEAD
 import numpy as np
 import rclpy
 from rclpy.node import Node
@@ -13,14 +12,6 @@ try:
     from cev_msgs.srv import QueryCostmap
 except ImportError:
     QueryCostmap = None
-=======
-from rclpy.node import Node
-from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
-from geometry_msgs.msg import PoseStamped, TransformStamped
-from nav_msgs.msg import OccupancyGrid, MapMetaData, Odometry
-from std_msgs.msg import Header, Float32MultiArray
-from cev_msgs.msg import Waypoint, Trajectory
->>>>>>> refs/remotes/origin/lane-planner
 from tf2_ros import StaticTransformBroadcaster
 from typing import List, Tuple
 
@@ -118,7 +109,6 @@ class VehiclePublisher(Node):
         except Exception:
             self.get_logger().warning('Could not create igvc_lane publisher')
 
-<<<<<<< HEAD
         # Subscribe to planner mode so the sim can display it
         self.planner_mode = 'GPS'  # default
         self.planner_waypoint_idx = -1
@@ -184,10 +174,6 @@ class VehiclePublisher(Node):
         self._costmap_query_service = '/query_costmap'
         self._costmap_query_timeout = 0.25
         self._costmap_client = None
-=======
-        # Live tuning for lane-following MPC cost weights
-        self.cost_weights_pub = None
->>>>>>> refs/remotes/origin/lane-planner
         try:
             self.cost_weights_pub = self.create_publisher(Float32MultiArray, 'lane_cost_weights', 10)
         except Exception:

@@ -734,7 +734,6 @@ def draw_planner_trajectory(surface, sim):
         except Exception:
             pass
 
-<<<<<<< HEAD
 def draw_plotter_visible_grid(surface, vehicle, camera_x, camera_y, grid_width_m=30.0, grid_height_m=30.0, resolution=0.2, zoom=1.0):
     """Draw the visible grid window that the plotter sees (moving box).
     
@@ -829,68 +828,3 @@ def draw_rl_waypoints(surface, rl_waypoints, rl_selected_gap, vehicle, camera_x,
             
     except Exception:
         pass
-=======
-
-def draw_planner_ghosts(surface, sim):
-    """
-    Project translucent car footprints along the latest planner trajectory.
-    Useful to visualize intended heading/curvature at each waypoint.
-    """
-    try:
-        traj_msg = getattr(sim.pose_publisher, 'latest_trajectory_msg', None)
-    except Exception:
-        return
-    if traj_msg is None:
-        return
-
-    # Pull vehicle geometry
-    vehicle = getattr(sim, 'vehicle', None)
-    length = getattr(vehicle, 'length', 0.9)
-    width = getattr(vehicle, 'width', 0.6)
-    half_l = length * 0.5
-    half_w = width * 0.5
-
-    def corners(x, y, theta):
-        ct = math.cos(theta)
-        st = math.sin(theta)
-        pts = [
-            (half_l, half_w),
-            (half_l, -half_w),
-            (-half_l, -half_w),
-            (-half_l, half_w),
-        ]
-        out = []
-        for px, py in pts:
-            wx = x + px * ct - py * st
-            wy = y + px * st + py * ct
-            out.append(world_to_screen(wx, wy, sim.camera_x, sim.camera_y))
-        return out
-
-    ghost = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
-    try:
-        waypoints = list(getattr(traj_msg, 'waypoints', []) or [])
-    except Exception:
-        return
-    if not waypoints:
-        return
-
-    # Sample every Nth waypoint to reduce clutter
-    step = max(1, len(waypoints) // 12)
-    for idx in range(0, len(waypoints), step):
-        wp = waypoints[idx]
-        x = getattr(wp, 'x', None)
-        y = getattr(wp, 'y', None)
-        theta = getattr(wp, 'theta', None)
-        if x is None or y is None or theta is None:
-            continue
-        pts = corners(x, y, theta)
-        alpha = int(200 * (1.0 - (idx / float(len(waypoints)))))
-        color = (0, 200, 255, max(40, min(200, alpha)))
-        try:
-            pygame.draw.polygon(ghost, color, pts)
-            pygame.draw.polygon(ghost, (0, 120, 180, color[3]), pts, width=1)
-        except Exception:
-            continue
-
-    surface.blit(ghost, (0, 0))
->>>>>>> refs/remotes/origin/lane-planner

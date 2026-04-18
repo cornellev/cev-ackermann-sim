@@ -11,133 +11,11 @@ from constants import *
 from sim_publisher import VehiclePublisher
 from sim_edit import SceneEditor
 from draw import *
-<<<<<<< HEAD
 from vehicle import Vehicle, calculate_angular_velocity
 from evaluator import RunEvaluator
 import numpy as np
 pygame.init()
 
-=======
-from nearest_costmap import Grid as CostGrid, NearestGenerator
-from euclidean_costmap import Grid as CostGrid, Euclidean, EuclideanCostMap
-pygame.init()
-
-def calculate_angular_velocity(speed, steering_angle, wheelbase):
-    if abs(steering_angle) > 1e-6:
-        turning_radius = wheelbase / math.tan(steering_angle)
-        return speed / turning_radius
-    else:
-        return 0
-
-class Vehicle:
-    def __init__(self, x=0, y=0):
-        # Vehicle parameters in meters
-        self.wheelbase = 0.4572  # L (18 inches)
-        self.track_width = 0.3048  # W (12 inches)
-        self.length = 0.9144 # 3 feet in meters
-        self.width = 0.6096  # 2 feet in meters
-
-        self.max_speed = 2.2352  # m/s (5 mph)
-        self.throttle_acceleration = 2.5  # m/s^2
-        self.max_acceleration = 2.5  # m/s^2
-        self.steering_rate = math.radians(180) # rad/s
-        self.max_steering_rate = math.radians(180) # rad/s
-
-        # TODO: steering system parameters
-        # parameters go here
-
-        # State variables
-        self.x = x
-        self.y = y
-        self.heading = 0.0  # radians
-        self.speed = 0.0  # m/s
-        # assuming bicycle model with 100% ackermann
-        self.steering_angle = 0.0  # radians
-
-        self.max_steering_angle = self.calculate_max_steering_angle()
-
-    def force_update(self, dt, speed, steering_angle):
-        """Updates vehicle state with given parameters from trajectory follower. 
-        If the given speed exceeds the max velocity, clamp down to max velocity
-        If the given steering angle exceeds max steering angle speed, clamp down as well
-        """
-        if abs(self.speed - speed) > self.max_acceleration * dt:
-            speed = self.speed + self.max_acceleration * dt if speed > self.speed else self.speed - self.max_acceleration * dt
-        if abs(speed) > self.max_speed:
-            speed = self.max_speed if speed > 0 else -self.max_speed
-        
-        if abs(self.steering_angle - steering_angle) > self.max_steering_rate * dt:
-            steering_angle = self.steering_angle + self.max_steering_rate * dt if steering_angle > self.steering_angle else self.steering_angle - self.max_steering_rate * dt
-        if abs(steering_angle) > self.max_steering_angle:
-            steering_angle = self.max_steering_angle if steering_angle > 0 else -self.max_steering_angle
-
-        self.speed = speed
-        self.steering_angle = steering_angle
-
-        angular_velocity = calculate_angular_velocity(self.speed, self.steering_angle, self.wheelbase)
-        self.heading += angular_velocity * dt
-        # Normalize heading to be within -pi to pi
-        self.heading = (self.heading + math.pi) % (2 * math.pi) - math.pi
-
-        self.x += self.speed * math.cos(self.heading) * dt
-        self.y += self.speed * math.sin(self.heading) * dt
-
-    def update(self, dt, speed_input, steer_input):
-        """Update vehicle state w/ bicycle model"""
-
-        # update speed based on throttle input
-        self.speed = max(-self.max_speed, min(self.max_speed, self.speed + speed_input * self.throttle_acceleration * dt))
-        if speed_input < 1e-6:
-            # natural deceleration
-            self.speed *= 0.25 ** dt
-
-        # update effective steering angle based on steering input
-        if steer_input != 0:
-            self.steering_angle = max(-self.max_steering_angle, min(self.max_steering_angle, self.steering_angle + steer_input * self.steering_rate * dt))
-        else:
-            self.steering_angle = self.steering_angle * 0.9 # natural return to center
-        # update position and heading
-        angular_velocity = calculate_angular_velocity(self.speed, self.steering_angle, self.wheelbase)
-
-        # Calculate heading
-        self.heading += angular_velocity * dt
-        # Normalize heading to be within -pi to pi
-        self.heading = (self.heading + math.pi) % (2 * math.pi) - math.pi
-
-        self.x += self.speed * math.cos(self.heading) * dt
-        self.y += self.speed * math.sin(self.heading) * dt
-
-    def get_corners(self):
-        """Returns the world coordinates of the four corners of the vehicle."""
-        half_length = self.length / 2
-        half_width = self.width / 2
-
-        # Corners in local vehicle frame (front-left, front-right, back-right, back-left)
-        local_corners = [
-            (half_length, half_width),
-            (half_length, -half_width),
-            (-half_length, -half_width),
-            (-half_length, half_width)
-        ]
-
-        # Rotate and translate corners to world frame
-        world_corners = []
-        for x_local, y_local in local_corners:
-            x_world = self.x + x_local * math.cos(self.heading) - y_local * math.sin(self.heading)
-            y_world = self.y + x_local * math.sin(self.heading) + y_local * math.cos(self.heading)
-            world_corners.append((x_world, y_world))
-
-        return world_corners
-    def calculate_max_steering_angle(self):
-        """
-        Calculate maximum steering angle from rack & pinion geometry.
-        This is the maximum angle a wheel can turn, NOT the maximum effective steering angle
-        (though the two should be close)
-        """
-        # arccot of average of cot of outer wheels 
-        return math.radians(27.2) # 34.919 deg, 23.0319 deg
-
->>>>>>> refs/remotes/origin/lane-planner
 class Simulator:
     def __init__(self, scene_arg: str = None):
         import time
@@ -435,7 +313,6 @@ class Simulator:
                     return True
         return False
 
-<<<<<<< HEAD
     def _generate_occupancy_grid(self, center_x=None, center_y=None, width_m=30.0, height_m=30.0, resolution=0.2):
         """
         Generate local occupancy grid around vehicle position.
@@ -510,73 +387,6 @@ class Simulator:
             distances.append(ray_distance)
         
         return distances
-=======
-    def _refresh_costmap_generator(self):
-        self._costmap_generator = Euclidean()
-
-    def _refresh_costmap_from_ros(self, force=False):
-        publisher = getattr(self, 'pose_publisher', None)
-        if publisher is None:
-            return False
-        try:
-            seq = publisher.costmap_seq() if hasattr(publisher, 'costmap_seq') else getattr(publisher, '_costmap_seq', 0)
-        except Exception:
-            seq = 0
-        if not force and seq == self._last_ros_costmap_seq:
-            return False
-
-        meta = getattr(publisher, 'latest_costmap_meta', None)
-        data_msg = getattr(publisher, 'latest_costmap_data', None)
-        if meta is None or data_msg is None:
-            return False
-
-        width = int(getattr(meta, 'width', 0))
-        height = int(getattr(meta, 'height', 0))
-        if width <= 0 or height <= 0:
-            return False
-
-        data = getattr(data_msg, 'data', None)
-        if data is None or len(data) < width * height:
-            return False
-
-        # ROS data is row-major (x fastest). Transpose so grid.data[x, y] aligns with C++.
-        flat = np.array(list(data)[: width * height], dtype=np.float32)
-        grid_data = flat.reshape((height, width)).T
-        origin = (float(meta.origin.position.x), float(meta.origin.position.y))
-        resolution = float(getattr(meta, 'resolution', 0.0)) or 0.1
-
-        grid = CostGrid(data=grid_data, origin=origin, resolution=resolution)
-        self._costmap = EuclideanCostMap(grid)
-        self._costmap_origin = grid.origin
-        self._costmap_shape = grid.data.shape
-        self._costmap_resolution = grid.resolution
-        self._last_ros_costmap_seq = seq
-        return True
-
-    def _rebuild_costmap_from_obstacles(self):
-        if not self.show_traj_cost_debug:
-            return
-        if self._refresh_costmap_from_ros(force=True):
-            return
-        self._costmap = None
-
-    def _generate_costmap_grid(self):
-        nx = int(max(1, math.ceil(self._costmap_width / self._costmap_resolution)))
-        ny = int(max(1, math.ceil(self._costmap_height / self._costmap_resolution)))
-        origin_x = -self._costmap_width / 2.0
-        origin_y = -self._costmap_height / 2.0
-        data = np.zeros((nx, ny), dtype=np.float32)
-        for ix in range(nx):
-            cx = origin_x + (ix + 0.5) * self._costmap_resolution
-            for iy in range(ny):
-                cy = origin_y + (iy + 0.5) * self._costmap_resolution
-                occupied = self._point_inside_obstacles(cx, cy)
-                data[ix, iy] = 1.0 if occupied else 0.0
-        cost_grid = CostGrid(data=data, origin=(origin_x, origin_y), resolution=self._costmap_resolution)
-        self._costmap_origin = cost_grid.origin
-        self._costmap_shape = cost_grid.data.shape
-        return cost_grid
->>>>>>> refs/remotes/origin/lane-planner
 
     def _lookup_costmap_cost(self, x, y):
         if not self.show_traj_cost_debug:
@@ -1991,7 +1801,6 @@ class Simulator:
                             self.pose_publisher.get_logger().info(f'Local trajectory cost debug overlay {state}')
                         except Exception:
                             pass
-<<<<<<< HEAD
                     elif event.key == pygame.K_v and not self.edit_mode:
                         self.perception_mode = not self.perception_mode
                         if not self.perception_mode:
@@ -2003,15 +1812,6 @@ class Simulator:
                         self.debug_mode = not self.debug_mode
                         self._debug_click_pos = None
                         print(f"[DEBUG] Heatmap mode {'ON (click to query cost)' if self.debug_mode else 'OFF'}")
-=======
-                    elif event.key == pygame.K_g and not self.edit_mode:
-                        self._show_planner_ghosts = not self._show_planner_ghosts
-                        try:
-                            state = 'enabled' if self._show_planner_ghosts else 'disabled'
-                            self.pose_publisher.get_logger().info(f'Planner ghost render {state}')
-                        except Exception:
-                            pass
->>>>>>> refs/remotes/origin/lane-planner
                     elif event.key == pygame.K_ESCAPE and self.edit_mode:
                         # Cancel current tool operation
                         self.editor.temp_polygon = []
@@ -2044,7 +1844,6 @@ class Simulator:
             self._update_trajectory_cost_rows(traj_msg)
             now_time = pygame.time.get_ticks() / 1000.0
 
-<<<<<<< HEAD
             # In auto-follow locked mode, force follow_planner True every frame.
             if getattr(self, '_auto_follow_locked', False):
                 self.follow_planner = True
@@ -2053,11 +1852,6 @@ class Simulator:
             target_speed = 0.0
             desired_steer = 0.0
 
-=======
-            target_speed = self.vehicle.speed
-            desired_steer = self.vehicle.steering_angle
-            latest_ack = None
->>>>>>> refs/remotes/origin/lane-planner
             if self.follow_planner:
                 # When follow_planner is enabled, the simulator accepts external
                 # AckermannDrive commands from an external follower. If such a
@@ -2071,10 +1865,6 @@ class Simulator:
                     else:
                         target_speed = getattr(latest_ack, 'speed', 0.0)
                         desired_steer = getattr(latest_ack, 'steering_angle', 0.0)
-<<<<<<< HEAD
-=======
-                # else: no external command -> keep keyboard inputs (manual driving)
->>>>>>> refs/remotes/origin/lane-planner
 
             # if using traj follower, force input, else do normal input
             if self.follow_planner and latest_ack is not None:
@@ -2229,11 +2019,7 @@ class Simulator:
                     draw_obstacles(self.screen, self.obstacles, self.camera_x, self.camera_y, zoom=self.camera_zoom)
                 draw_start_goal(self.screen, self.start_pose, self.target_pose, self.camera_x, self.camera_y, zoom=self.camera_zoom)
                 self._draw_costmap_probe_marker()
-<<<<<<< HEAD
                 
-=======
-                self._draw_distance_measurement()
->>>>>>> refs/remotes/origin/lane-planner
                 # Draw waypoints in sim view as numbered green circles
                 try:
                     for i, (x, y) in enumerate(getattr(self, 'waypoints', []) or []):
@@ -2253,7 +2039,6 @@ class Simulator:
                 draw_lane_boundaries(self.screen, self)
                 draw_cumulative_lane_trail(self.screen, self)
                 draw_planner_trajectory(self.screen, self)
-<<<<<<< HEAD
                 draw_detected_lane_cl(self.screen, self)
                 draw_mpc_targets(self.screen, self)
                 self._draw_local_plan_cost_overlay()
@@ -2264,13 +2049,6 @@ class Simulator:
                         draw_debug_cost_label(self.screen, self.font,
                                               self._debug_click_pos[0], self._debug_click_pos[1], self)
                 
-=======
-                if self._show_planner_ghosts:
-                    draw_planner_ghosts(self.screen, self)
-                self._draw_local_plan_cost_overlay()
-
-            self._draw_cost_tuning_panel()
->>>>>>> refs/remotes/origin/lane-planner
             draw_map_selector(self.screen, self)  # Always show map selector
 
             pygame.display.flip()
