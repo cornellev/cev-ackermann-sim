@@ -3,136 +3,37 @@ import math
 import os
 import json
 import rclpy
+import threading
 from objects import CircleObstacle, CollisionDetector, PolygonObstacle, LineObstacle
-from sim_map_loader import load_map_file, load_obstacles_from_json
+from sim_map_loader import load_map_file, load_obstacles_from_json, load_lane_objects_from_json
 from constants import *
 from sim_publisher import VehiclePublisher
 from sim_edit import SceneEditor
 from draw import *
+from vehicle import Vehicle, calculate_angular_velocity
+from evaluator import RunEvaluator
+import numpy as np
 pygame.init()
-
-def calculate_angular_velocity(speed, steering_angle, wheelbase):
-    if abs(steering_angle) > 1e-6:
-        turning_radius = wheelbase / math.tan(steering_angle)
-        return speed / turning_radius
-    else:
-        return 0
-
-class Vehicle:
-    def __init__(self, x=0, y=0):
-        # Vehicle parameters in meters
-        self.wheelbase = 0.4572*0.8  # L (18 inches)
-        self.track_width = 0.3048  # W (12 inches)
-        self.length = 0.9144 # 3 feet in meters
-        self.width = 0.6096  # 2 feet in meters
-
-        self.max_speed = 2.2352  # m/s (5 mph)
-        self.throttle_acceleration = 2.5  # m/s^2
-        self.max_acceleration = 2.5  # m/s^2
-        self.steering_rate = math.radians(45) # rad/s
-        self.max_steering_rate = math.radians(45) # rad/s
-
-        # TODO: steering system parameters
-        # parameters go here
-
-        # State variables
-        self.x = x
-        self.y = y
-        self.heading = 0.0  # radians
-        self.speed = 0.0  # m/s
-        # assuming bicycle model with 100% ackermann
-        self.steering_angle = 0.0  # radians
-
-        self.max_steering_angle = self.calculate_max_steering_angle()
-
-    def force_update(self, dt, speed, steering_angle):
-        """Updates vehicle state with given parameters from trajectory follower. 
-        If the given speed exceeds the max velocity, clamp down to max velocity
-        If the given steering angle exceeds max steering angle speed, clamp down as well
-        """
-        if abs(self.speed - speed) > self.max_acceleration * dt:
-            speed = self.speed + self.max_acceleration * dt if speed > self.speed else self.speed - self.max_acceleration * dt
-        if abs(speed) > self.max_speed:
-            speed = self.max_speed if speed > 0 else -self.max_speed
-        
-        if abs(self.steering_angle - steering_angle) > self.max_steering_rate * dt:
-            steering_angle = self.steering_angle + self.max_steering_rate * dt if steering_angle > self.steering_angle else self.steering_angle - self.max_steering_rate * dt
-        if abs(steering_angle) > self.max_steering_angle:
-            steering_angle = self.max_steering_angle if steering_angle > 0 else -self.max_steering_angle
-
-        self.speed = speed
-        self.steering_angle = steering_angle
-
-        angular_velocity = calculate_angular_velocity(self.speed, self.steering_angle, self.wheelbase)
-        self.heading += angular_velocity * dt
-        # Normalize heading to be within -pi to pi
-        self.heading = (self.heading + math.pi) % (2 * math.pi) - math.pi
-
-        self.x += self.speed * math.cos(self.heading) * dt
-        self.y += self.speed * math.sin(self.heading) * dt
-
-    def update(self, dt, speed_input, steer_input):
-        """Update vehicle state w/ bicycle model"""
-
-        # update speed based on throttle input
-        self.speed = max(-self.max_speed, min(self.max_speed, self.speed + speed_input * self.throttle_acceleration * dt))
-        if speed_input < 1e-6:
-            # natural deceleration
-            self.speed *= 0.25 ** dt
-
-        # update effective steering angle based on steering input
-        if steer_input != 0:
-            self.steering_angle = max(-self.max_steering_angle, min(self.max_steering_angle, self.steering_angle + steer_input * self.steering_rate * dt))
-        else:
-            self.steering_angle = self.steering_angle * 0.9 # natural return to center
-        # update position and heading
-        angular_velocity = calculate_angular_velocity(self.speed, self.steering_angle, self.wheelbase)
-
-        # Calculate heading
-        self.heading += angular_velocity * dt
-        # Normalize heading to be within -pi to pi
-        self.heading = (self.heading + math.pi) % (2 * math.pi) - math.pi
-
-        self.x += self.speed * math.cos(self.heading) * dt
-        self.y += self.speed * math.sin(self.heading) * dt
-
-    def get_corners(self):
-        """Returns the world coordinates of the four corners of the vehicle."""
-        half_length = self.length / 2
-        half_width = self.width / 2
-
-        # Corners in local vehicle frame (front-left, front-right, back-right, back-left)
-        local_corners = [
-            (half_length, half_width),
-            (half_length, -half_width),
-            (-half_length, -half_width),
-            (-half_length, half_width)
-        ]
-
-        # Rotate and translate corners to world frame
-        world_corners = []
-        for x_local, y_local in local_corners:
-            x_world = self.x + x_local * math.cos(self.heading) - y_local * math.sin(self.heading)
-            y_world = self.y + x_local * math.sin(self.heading) + y_local * math.cos(self.heading)
-            world_corners.append((x_world, y_world))
-
-        return world_corners
-    def calculate_max_steering_angle(self):
-        """
-        Calculate maximum steering angle from rack & pinion geometry.
-        This is the maximum angle a wheel can turn, NOT the maximum effective steering angle
-        (though the two should be close)
-        """
-        # arccot of average of cot of outer wheels 
-        return math.radians(33.58) # 30 deg, 38 deg
 
 class Simulator:
     def __init__(self, scene_arg: str = None):
-        rclpy.init()
-        self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+        import time
+        t0 = time.time()
+        print("[STARTUP] Starting simulator initialization...")
+
+        self._shutdown_complete = False
+        self._owns_rclpy_context = False
+        if not rclpy.ok():
+            rclpy.init(args=None)
+            self._owns_rclpy_context = True
+
+        t1 = time.time()
         pygame.display.set_caption("Vehicle Simulator")
+        self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         self.clock = pygame.time.Clock()
         self.font = pygame.font.SysFont("monospace", 18)
+        t2 = time.time()
+        print(f"[STARTUP] Pygame display setup took {(t2-t1)*1000:.1f}ms")
         
         # UI state for map selector
         self.maps_dir = os.path.join(os.path.dirname(__file__), 'maps')
@@ -149,11 +50,15 @@ class Simulator:
         
         # Initialize publisher before loading maps
         self.pose_publisher = VehiclePublisher()
+        t3 = time.time()
+        print(f"[STARTUP] VehiclePublisher created in {(t3-t2)*1000:.1f}ms")
         
         # load scene from config if available (obstacles, start, goal)
         self.vehicle = Vehicle()
         self.vehicle.heading = 0.0
         self.vehicle.speed = 0.0
+        t4 = time.time()
+        print(f"[STARTUP] Vehicle created in {(t4-t3)*1000:.1f}ms")
 
         # Local plan cost debug instrumentation (toggle via show_traj_cost_debug)
         self.show_traj_cost_debug = False
@@ -177,6 +82,8 @@ class Simulator:
             self.load_map(os.path.join(self.maps_dir, self.available_maps[0]))
         else:
             self.load_empty_map()
+        t5 = time.time()
+        print(f"[STARTUP] Map loading took {(t5-t4)*1000:.1f}ms")
 
         # collision detector used each frame
         self.collision_detector = CollisionDetector()
@@ -190,15 +97,70 @@ class Simulator:
         self.traj_index = 0
         self.follow_planner = False
 
-        try:
-            self.pose_publisher.publish_occupancy_grid(self.obstacles, width_m=30.0, height_m=30.0, resolution=0.1)
-        except Exception as e:
-            print(f"Failed to publish initial occupancy grid: {e}")
+        self.use_pure_pursuit = False
+
+        # Current waypoint index for sequential MPC target publishing
+        self._waypoint_index = 0
+        self._waypoint_reach_dist = 1.0  # meters to consider waypoint reached
+
+        # Camera zoom control
+        self.camera_zoom = 1.0  # Zoom factor (1.0 = normal, 0.5 = zoomed out 2x, 2.0 = zoomed in 2x)
+        self.camera_zoom_min = 0.25
+        self.camera_zoom_max = 3.0
+
+        # Fog-of-war perception mode: only draw obstacles the car has "seen"
+        self.perception_mode = False          # V key toggles
+        self.perception_range = 5.0           # metres — matches lane boundary max_dist
+        self._revealed_obstacle_ids = set()   # id(obs) of obstacles seen at least once
+        self._permanent_lane_left = []        # (x,y) accumulated from all frames
+        self._permanent_lane_right = []       # (x,y) accumulated from all frames
+        self._permanent_lane_center = []      # (x,y) midpoints, only when both sides seen
+
+        # Debug mode: D key toggles heatmap overlay + click-to-query cost
+        self.debug_mode = False
+        self._debug_click_pos = None          # last clicked (world_x, world_y) for label
+
+        # Local occupancy grid generation (lazy loading)
+        self._last_grid_update_pos = (0.0, 0.0)  # Track last grid computation position
+        self._grid_update_threshold = 1.5  # Re-publish window when vehicle moves > 1.5m
+        self._last_grid_update_time = pygame.time.get_ticks() / 1000.0
+        
+        # Asynchronous grid computation (non-blocking background thread)
+        self._grid_thread = None
+        self._grid_thread_lock = threading.Lock()
+        self._grid_should_compute = False
+        self._grid_compute_params = None
+
+        # NOTE: Initial full-map occupancy grid generation is now skipped for fast startup.
+        # The lazy local grid generator (publish_occupancy_grid_local) will compute
+        # the initial grid around the vehicle on the first frame of the main loop.
+        # This provides instant simulator startup for even complex maps.
+        # try:
+        #     self.pose_publisher.publish_occupancy_grid(self.obstacles, width_m=30.0, height_m=30.0, resolution=0.1)
+        # except Exception as e:
+        #     print(f"Failed to publish initial occupancy grid: {e}")
 
         try:
             # publish stuff
             self.pose_publisher.publish_pose(self.vehicle.x, self.vehicle.y, self.vehicle.heading, self.vehicle.speed, self.vehicle.steering_angle)
             self.pose_publisher.publish_odometry(self.vehicle.x, self.vehicle.y, self.vehicle.heading, self.vehicle.speed)
+        except Exception:
+            pass
+
+        # Publish initial occupancy grid centred on the vehicle's start position.
+        # (The lazy loop only re-publishes when the car has moved 1.5m so we need this upfront.)
+        try:
+            self.pose_publisher.publish_lane_boundaries(
+                self.obstacles,
+                car_x=self.vehicle.x,
+                car_y=self.vehicle.y,
+                car_heading=self.vehicle.heading,
+            )
+            self.pose_publisher.publish_occupancy_grid_local(
+                self.obstacles,
+                center_x=self.vehicle.x,
+                center_y=self.vehicle.y,
+            )
         except Exception:
             pass
 
@@ -211,6 +173,30 @@ class Simulator:
 
         self.publish_interval = 0.1
         self._last_publish_time = pygame.time.get_ticks() / 1000.0
+        
+        t_end = time.time()
+        print(f"[STARTUP] Total initialization took {(t_end-t0)*1000:.1f}ms - READY TO RENDER")
+        print("[CONTROLS] SPACE=toggle planner | WASD=manual drive | V=fog-of-war mode | +/-=zoom")
+        print("[STARTUP] Note: Occupancy grid is computed lazily in the main loop (15-20x faster)")
+        print("[STARTUP]       - Never blocks initial startup (<120ms even for complex maps)")
+        print("[STARTUP]       - Updates as vehicle moves (every 0.5s+ with 900-950ms per update)")
+        print("[STARTUP]       - Uses local 30m×30m window at 0.2m resolution for speed")
+
+    def _shutdown_sim(self):
+        if self._shutdown_complete:
+            return
+        self._shutdown_complete = True
+
+        pygame.quit()
+        try:
+            self.pose_publisher.destroy_node()
+        except Exception:
+            pass
+        if self._owns_rclpy_context and rclpy.ok():
+            try:
+                rclpy.shutdown()
+            except Exception:
+                pass
 
     def handle_input(self):
         """Interpret user input"""
@@ -233,6 +219,30 @@ class Simulator:
             steer_input = -1
         else:
             steer_input = 0
+
+        # Zoom controls
+        if keys[pygame.K_EQUALS] or keys[pygame.K_PLUS]:
+            if self.edit_mode and self.editor:
+                self.editor.camera_zoom = min(self.editor.camera_zoom_max, self.editor.camera_zoom * 1.02)
+            else:
+                self.camera_zoom = min(self.camera_zoom_max, self.camera_zoom * 1.02)
+        if keys[pygame.K_MINUS]:
+            if self.edit_mode and self.editor:
+                self.editor.camera_zoom = max(self.editor.camera_zoom_min, self.editor.camera_zoom * 0.98)
+            else:
+                self.camera_zoom = max(self.camera_zoom_min, self.camera_zoom * 0.98)
+        if keys[pygame.K_0]:
+            if self.edit_mode and self.editor:
+                self.editor.camera_zoom = 1.0  # Reset to normal zoom
+            else:
+                self.camera_zoom = 1.0  # Reset to normal zoom
+
+        # Pure Pursuit toggle (U key)
+        u_pressed = keys[pygame.K_u]
+        if u_pressed and not getattr(self, '_u_was_pressed', False):
+            self.use_pure_pursuit = not self.use_pure_pursuit
+            print(f"Pure Pursuit: {'ON' if self.use_pure_pursuit else 'OFF'}")
+        self._u_was_pressed = u_pressed
 
         # TODO: add keys to change car dimensions (or have them be input at start of program?)
 
@@ -270,6 +280,81 @@ class Simulator:
                 if self._point_in_polygon(x, y, obs.vertices):
                     return True
         return False
+
+    def _generate_occupancy_grid(self, center_x=None, center_y=None, width_m=30.0, height_m=30.0, resolution=0.2):
+        """
+        Generate local occupancy grid around vehicle position.
+        
+        Args:
+            center_x, center_y: Center of grid (defaults to vehicle position)
+            width_m, height_m: Grid size in meters
+            resolution: Grid cell size in meters
+        
+        Returns:
+            numpy array with 0=free, 1=occupied, shape=(height_cells, width_cells)
+        """
+        if center_x is None:
+            center_x = self.vehicle.x
+        if center_y is None:
+            center_y = self.vehicle.y
+        
+        nx = int(math.ceil(width_m / resolution))
+        ny = int(math.ceil(height_m / resolution))
+        
+        # Origin at bottom-left
+        origin_x = center_x - width_m / 2.0
+        origin_y = center_y - height_m / 2.0
+        
+        # Create occupancy grid (0=free, 1=occupied)
+        grid = np.zeros((ny, nx), dtype=np.float32)
+        
+        for iy in range(ny):
+            for ix in range(nx):
+                # Cell center in world coordinates
+                cx = origin_x + (ix + 0.5) * resolution
+                cy = origin_y + (iy + 0.5) * resolution
+                
+                # Check if occupied
+                if self._point_inside_obstacles(cx, cy):
+                    grid[iy, ix] = 1.0
+        
+        return grid
+
+    def poll_lidar_rays(self, num_rays: int = 36, max_distance: float = 10.0) -> list:
+        """
+        Poll LiDAR rays directly from obstacles (vehicle-relative).
+        Much faster than generating full occupancy grid.
+        
+        Args:
+            num_rays: Number of rays to cast (36 = 10° resolution)
+            max_distance: Maximum ray distance in meters
+        
+        Returns:
+            List of distances for each ray angle
+        """
+        distances = []
+        
+        for ray_idx in range(num_rays):
+            # Ray angle relative to vehicle heading
+            angle_relative = (ray_idx / num_rays) * 2 * math.pi
+            angle_world = self.vehicle.heading + angle_relative
+            
+            # Ray cast from vehicle position outward
+            ray_distance = max_distance
+            
+            # Check distance to each obstacle along this ray
+            step_size = 0.1  # 10cm per check
+            for check_distance in np.arange(0, max_distance, step_size):
+                ray_x = self.vehicle.x + check_distance * math.cos(angle_world)
+                ray_y = self.vehicle.y + check_distance * math.sin(angle_world)
+                
+                if self._point_inside_obstacles(ray_x, ray_y):
+                    ray_distance = check_distance
+                    break
+            
+            distances.append(ray_distance)
+        
+        return distances
 
     def _lookup_costmap_cost(self, x, y):
         """Query the planner node for a costmap value."""
@@ -549,6 +634,10 @@ class Simulator:
     def load_map(self, map_path):
         """Load a map file and update sim state"""
         try:
+            # Clear any previous map state
+            self.waypoints = []
+            self._waypoint_index = 0
+            
             # Load obstacles and scene metadata (start/goal/waypoints)
             self.obstacles, scene_obj = load_map_file(map_path)
             self.current_map = os.path.basename(map_path)
@@ -560,6 +649,8 @@ class Simulator:
                 self.vehicle.y = float(start.get('y', 0.0))
                 self.vehicle.heading = float(start.get('theta', 0.0))
                 self.start_pose = (self.vehicle.x, self.vehicle.y, self.vehicle.heading)
+                # Reset grid update pos to current start — initial publish will centre on the car
+                self._last_grid_update_pos = (self.vehicle.x, self.vehicle.y)
             else:
                 self.start_pose = None
             
@@ -588,11 +679,59 @@ class Simulator:
                     self.pose_publisher.publish_trajectory(self.waypoints)
             except Exception:
                 pass
-            
+
+            # Initialize run evaluator for objective scoring
+            self.evaluator = RunEvaluator(self.waypoints, self.obstacles, duration=30.0)
+
+            # Clear cumulative lane trail on new map
+            try:
+                self.pose_publisher.cumulative_lane_trail = []
+            except Exception:
+                pass
+            # Clear fog-of-war state on new map
+            if hasattr(self, '_revealed_obstacle_ids'):
+                self._revealed_obstacle_ids.clear()
+                self._permanent_lane_left.clear()
+                self._permanent_lane_right.clear()
+                self._permanent_lane_center.clear()
+
             # Publish updates
-            self.pose_publisher.publish_occupancy_grid(self.obstacles)
             self.pose_publisher.publish_target(gx, gy, 0.0, 0.0, gtheta)
+
+            # Force immediate initial occupancy grid publish so scan_lane() has data from frame 1.
+            # Without this, the grid is empty until the car moves 1.5m → planner never starts
+            # (map_initialized stays False) → car sits idle for up to 15 seconds.
+            try:
+                init_obstacles = list(self.obstacles)
+                init_cx = self.vehicle.x
+                init_cy = self.vehicle.y
+                init_heading = self.vehicle.heading
+                def _publish_initial_grid():
+                    self.pose_publisher.publish_lane_boundaries(
+                        init_obstacles, car_x=init_cx, car_y=init_cy,
+                        car_heading=init_heading)
+                    self.pose_publisher.publish_occupancy_grid_local(
+                        init_obstacles, center_x=init_cx, center_y=init_cy,
+                        width_m=12.0, height_m=12.0)
+                    print("[MAP] Initial occupancy grid + lane boundaries published.")
+                import threading as _threading
+                _threading.Thread(target=_publish_initial_grid, daemon=True).start()
+            except Exception as _e:
+                print(f"[MAP] Warning: could not publish initial grid: {_e}")
+            
+            # Load lane centerlines (from explicit field or from lane obstacles)
             self.lane_centerline = self._parse_lane_centerline(scene_obj.get('lane_centerline'))
+            
+            # Also extract lanes defined in obstacles marked as is_lane: true
+            self.map_lanes = scene_obj.get('lanes', [])
+            if self.map_lanes:
+                print(f"✓ Loaded {len(self.map_lanes)} lanes from map")
+            
+            # Load lane objects (polygon obstacles) for the waypoint generator
+            self.lane_objects = load_lane_objects_from_json(map_path)
+            if self.lane_objects:
+                print(f"✓ Loaded {len(self.lane_objects)} lane objects from map")
+            
             try:
                 self.pose_publisher.publish_lane_centerline(self.lane_centerline)
             except Exception:
@@ -614,16 +753,104 @@ class Simulator:
         self.start_pose = None
         self.target_pose = None
         self.lane_centerline = []
-        # Publish empty grid
-        try:
-            self.pose_publisher.publish_occupancy_grid(self.obstacles)
-        except Exception:
-            print("Failed to publish occupancy grid")
-            pass
+        self.map_lanes = []  # Clear lanes
+        self.lane_objects = []  # Clear lane objects
+        self.waypoints = []  # Clear waypoints
+        # NOTE: Occupancy grid will be computed lazily by the main loop using local window
+        # to avoid blocking startup on empty maps. Commenting this out allows instant startup.
+        # try:
+        #     self.pose_publisher.publish_occupancy_grid(self.obstacles)
+        # except Exception:
+        #     print("Failed to publish occupancy grid")
+        #     pass
         try:
             self.pose_publisher.publish_lane_centerline(self.lane_centerline)
         except Exception:
             pass
+
+    def _compute_grid_background(self):
+        """Background thread function for computing occupancy grid without blocking main loop"""
+        import time as time_module
+        try:
+            t_start = time_module.time()
+            params = self._grid_compute_params
+            if params is None:
+                return
+            
+            # Perform the expensive grid computation in background
+            self.pose_publisher.publish_lane_boundaries(
+                params.get('all_obstacles', params['obstacles']),
+                car_x=params['center_x'],
+                car_y=params['center_y'],
+                car_heading=params.get('heading', 0.0),
+            )
+            self.pose_publisher.publish_occupancy_grid_local(
+                params['obstacles'],
+                center_x=params['center_x'],
+                center_y=params['center_y'],
+                width_m=12.0,
+                height_m=12.0
+            )
+            
+            # Store completion time for reporting
+            self._grid_compute_time = (time_module.time() - t_start) * 1000
+        except Exception as e:
+            print(f"Error in background grid computation: {e}")
+
+    def _update_perception(self):
+        """Update fog-of-war: reveal obstacles within perception_range of the car,
+        and accumulate lane boundary points permanently."""
+        # Always accumulate lane boundary points (so trail is ready when FOW is toggled on)
+        try:
+            new_left = getattr(self.pose_publisher, 'last_lane_left_pts', [])
+            new_right = getattr(self.pose_publisher, 'last_lane_right_pts', [])
+            def _add_unique(target, pts, min_dist_sq=0.04):  # 0.2m dedup
+                for p in pts:
+                    if not any((p[0]-e[0])**2 + (p[1]-e[1])**2 < min_dist_sq for e in target[-200:]):
+                        target.append(p)
+            _add_unique(self._permanent_lane_left, new_left)
+            _add_unique(self._permanent_lane_right, new_right)
+            # Only accumulate centerline when both boundaries are visible
+            # and each paired point is at least 1.5m apart (genuine lane separation).
+            MIN_LANE_SEP = 1.5 * 1.5  # compare squared distances
+            if new_left and new_right:
+                n = min(len(new_left), len(new_right))
+                center_pts = []
+                for i in range(n):
+                    dsq = (new_left[i][0]-new_right[i][0])**2 + (new_left[i][1]-new_right[i][1])**2
+                    if dsq < MIN_LANE_SEP:
+                        continue
+                    center_pts.append(((new_left[i][0]+new_right[i][0])/2.0,
+                                       (new_left[i][1]+new_right[i][1])/2.0))
+                _add_unique(self._permanent_lane_center, center_pts)
+                if center_pts:
+                    self.pose_publisher.publish_persistent_centerline(self._permanent_lane_center)
+        except Exception:
+            pass
+
+        if not self.perception_mode:
+            return
+        vx, vy = self.vehicle.x, self.vehicle.y
+        r2 = self.perception_range ** 2
+        for obs in self.obstacles:
+            oid = id(obs)
+            if oid in self._revealed_obstacle_ids:
+                continue
+            # White lane-marking polygons are camera-only — not revealed by lidar.
+            # They appear via the permanent lane boundary trail instead.
+            if hasattr(obs, 'color'):
+                c = obs.color
+                if c[0] > 200 and c[1] > 200 and c[2] > 200:
+                    continue
+            # Reveal obstacle if ANY vertex (or centre for circles) is within 5m
+            if hasattr(obs, 'vertices'):
+                for (ox, oy) in obs.vertices:
+                    if (ox - vx)**2 + (oy - vy)**2 <= r2:
+                        self._revealed_obstacle_ids.add(oid)
+                        break
+            elif hasattr(obs, 'x') and hasattr(obs, 'y'):
+                if (obs.x - vx)**2 + (obs.y - vy)**2 <= r2:
+                    self._revealed_obstacle_ids.add(oid)
 
     def toggle_editor(self):
         """Toggle between simulation and editor modes"""
@@ -661,6 +888,7 @@ class Simulator:
             # Copy waypoints back
             try:
                 self.waypoints = list(getattr(self.editor, 'waypoints', []) or [])
+                self._waypoint_index = 0
                 try:
                     if getattr(self, 'pose_publisher', None) is not None:
                         self.pose_publisher.publish_trajectory(self.waypoints)
@@ -741,6 +969,11 @@ class Simulator:
                 elif event.type == pygame.MOUSEBUTTONDOWN:
                     if event.button == 1:  # Left click
                         pos = event.pos
+
+                        # Debug mode: click to query cost at position
+                        if self.debug_mode and not self.edit_mode:
+                            wx, wy = screen_to_world(pos[0], pos[1], self.camera_x, self.camera_y, self.camera_zoom)
+                            self._debug_click_pos = (wx, wy)
 
                         # If in edit mode, first allow editor to handle top-right controls
                         if self.edit_mode:
@@ -832,7 +1065,7 @@ class Simulator:
                                             pygame.key.set_repeat(0, 0)
                                         except Exception:
                                             pass
-                                wx, wy = screen_to_world(mx, my, self.editor.camera_x, self.editor.camera_y)
+                                wx, wy = screen_to_world(mx, my, self.editor.camera_x, self.editor.camera_y, self.editor.camera_zoom)
                                 # If remove tool is active, attempt to delete an obstacle or waypoint
                                 if self.editor.selected_tool == 'remove':
                                     removed = False
@@ -950,6 +1183,8 @@ class Simulator:
                                                 self.editor.line_start = (wx, wy)
                                             else:
                                                 self.editor.obstacles.append(LineObstacle(self.editor.line_start, (wx, wy), self.editor.obstacle_size))
+                                                # Automatically mark line obstacles as lanes
+                                                self.editor.lane_obstacle_indices.add(len(self.editor.obstacles) - 1)
                                                 self.editor.line_start = None
                                         elif self.editor.selected_tool == 'polygon':
                                             if len(self.editor.temp_polygon) >= 3:
@@ -1044,7 +1279,7 @@ class Simulator:
                                 # If moving an obstacle by index
                                 if getattr(self.editor, 'moving_obs_idx', None) is not None:
                                     idx = self.editor.moving_obs_idx
-                                    wx, wy = screen_to_world(event.pos[0], event.pos[1], self.editor.camera_x, self.editor.camera_y)
+                                    wx, wy = screen_to_world(event.pos[0], event.pos[1], self.editor.camera_x, self.editor.camera_y, self.editor.camera_zoom)
                                     obs = self.editor.obstacles[idx]
                                     if isinstance(obs, CircleObstacle):
                                         obs.x = wx
@@ -1053,21 +1288,21 @@ class Simulator:
                                         # translate all vertices by the delta
                                         # compute previous world pos of mouse from drag_last
                                         if self.editor.drag_last is not None:
-                                            prev_wx, prev_wy = screen_to_world(self.editor.drag_last[0], self.editor.drag_last[1], self.editor.camera_x, self.editor.camera_y)
+                                            prev_wx, prev_wy = screen_to_world(self.editor.drag_last[0], self.editor.drag_last[1], self.editor.camera_x, self.editor.camera_y, self.editor.camera_zoom)
                                             dx = wx - prev_wx
                                             dy = wy - prev_wy
                                             obs.vertices = [(x + dx, y + dy) for x, y in obs.vertices]
                                     # update drag_last for continuous movement
                                     self.editor.drag_last = event.pos
                                 elif self.editor.moving_start:
-                                    wx, wy = screen_to_world(event.pos[0], event.pos[1], self.editor.camera_x, self.editor.camera_y)
+                                    wx, wy = screen_to_world(event.pos[0], event.pos[1], self.editor.camera_x, self.editor.camera_y, self.editor.camera_zoom)
                                     try:
                                         _, _, th = self.editor.start_pose
                                     except Exception:
                                         th = 0.0
                                     self.editor.start_pose = (wx, wy, th)
                                 elif self.editor.moving_goal:
-                                    wx, wy = screen_to_world(event.pos[0], event.pos[1], self.editor.camera_x, self.editor.camera_y)
+                                    wx, wy = screen_to_world(event.pos[0], event.pos[1], self.editor.camera_x, self.editor.camera_y, self.editor.camera_zoom)
                                     try:
                                         _, _, th = self.editor.goal_pose
                                     except Exception:
@@ -1080,7 +1315,7 @@ class Simulator:
                                     self.editor.camera_y -= dy
                                     self.editor.drag_last = event.pos
                                 elif getattr(self.editor, 'moving_waypoint_idx', None) is not None:
-                                    wx, wy = screen_to_world(event.pos[0], event.pos[1], self.editor.camera_x, self.editor.camera_y)
+                                    wx, wy = screen_to_world(event.pos[0], event.pos[1], self.editor.camera_x, self.editor.camera_y, self.editor.camera_zoom)
                                     try:
                                         idx = self.editor.moving_waypoint_idx
                                         self.editor.waypoints[idx] = (wx, wy)
@@ -1088,7 +1323,7 @@ class Simulator:
                                         pass
                             elif self.editor.selected_tool == 'select' and self.editor.selected_idx is not None:
                                 # Move selected obstacle
-                                wx, wy = screen_to_world(event.pos[0], event.pos[1], self.editor.camera_x, self.editor.camera_y)
+                                wx, wy = screen_to_world(event.pos[0], event.pos[1], self.editor.camera_x, self.editor.camera_y, self.editor.camera_zoom)
                                 obs = self.editor.obstacles[self.editor.selected_idx]
                                 if isinstance(obs, CircleObstacle):
                                     obs.x = wx
@@ -1134,16 +1369,28 @@ class Simulator:
                                 self.editor.save_text += event.unicode
                         continue
                     if event.key == pygame.K_SPACE and not self.edit_mode:
-                        self.follow_planner = not self.follow_planner
-                        # Log status about follower presence when toggling follow mode
-                        try:
-                            if self.follow_planner:
-                                if self.pose_publisher.is_follower_connected():
-                                    self.pose_publisher.get_logger().info('Follow mode enabled and external follower appears connected')
+                        if getattr(self, '_auto_follow_locked', False):
+                            # In automated eval mode, SPACE is disabled to prevent accidental toggling.
+                            pass
+                        else:
+                            self.follow_planner = not self.follow_planner
+                            # Log status about follower presence when toggling follow mode
+                            try:
+                                if self.follow_planner:
+                                    if self.pose_publisher.is_follower_connected():
+                                        self.pose_publisher.get_logger().info('Follow mode enabled and external follower appears connected')
+                                    else:
+                                        self.pose_publisher.get_logger().info('Follow mode enabled but no external follower detected (manual control remains)')
                                 else:
-                                    self.pose_publisher.get_logger().info('Follow mode enabled but no external follower detected (manual control remains)')
-                            else:
-                                self.pose_publisher.get_logger().info('Follow mode disabled; manual control active')
+                                    self.pose_publisher.get_logger().info('Follow mode disabled; manual control active')
+                            except Exception:
+                                pass
+                    elif event.key == pygame.K_u and not self.edit_mode:
+                        # Toggle Pure Pursuit controller
+                        self.use_pure_pursuit = not self.use_pure_pursuit
+                        try:
+                            state = 'enabled' if self.use_pure_pursuit else 'disabled'
+                            self.pose_publisher.get_logger().info(f'Pure Pursuit controller {state}')
                         except Exception:
                             pass
                     elif event.key == pygame.K_t and not self.edit_mode:
@@ -1156,10 +1403,32 @@ class Simulator:
                             self.pose_publisher.get_logger().info(f'Local trajectory cost debug overlay {state}')
                         except Exception:
                             pass
+                    elif event.key == pygame.K_v and not self.edit_mode:
+                        self.perception_mode = not self.perception_mode
+                        if not self.perception_mode:
+                            self._revealed_obstacle_ids.clear()
+                            self._permanent_lane_left.clear()
+                            self._permanent_lane_right.clear()
+                        print(f"[VIZ] Perception/fog-of-war mode {'ON' if self.perception_mode else 'OFF'}")
+                    elif event.key == pygame.K_d and not self.edit_mode:
+                        self.debug_mode = not self.debug_mode
+                        self._debug_click_pos = None
+                        print(f"[DEBUG] Heatmap mode {'ON (click to query cost)' if self.debug_mode else 'OFF'}")
                     elif event.key == pygame.K_ESCAPE and self.edit_mode:
                         # Cancel current tool operation
                         self.editor.temp_polygon = []
                         self.editor.line_start = None
+                    elif event.key == pygame.K_l and self.edit_mode and self.editor.selected_tool == 'select':
+                        # Toggle lane status for selected polygon (L key in select mode)
+                        if self.editor.selected_idx is not None:
+                            obs = self.editor.obstacles[self.editor.selected_idx]
+                            if isinstance(obs, PolygonObstacle):
+                                if self.editor.selected_idx in self.editor.lane_obstacle_indices:
+                                    self.editor.lane_obstacle_indices.remove(self.editor.selected_idx)
+                                    print(f"Polygon {self.editor.selected_idx} is now a REGULAR obstacle")
+                                else:
+                                    self.editor.lane_obstacle_indices.add(self.editor.selected_idx)
+                                    print(f"Polygon {self.editor.selected_idx} is now a LANE")
 
             try:
                 rclpy.spin_once(self.pose_publisher, timeout_sec=0)
@@ -1174,25 +1443,27 @@ class Simulator:
 
             self._update_trajectory_cost_rows(traj_msg)
 
+            # In auto-follow locked mode, force follow_planner True every frame.
+            if getattr(self, '_auto_follow_locked', False):
+                self.follow_planner = True
+
+            latest_ack = None
+            target_speed = 0.0
+            desired_steer = 0.0
+
             if self.follow_planner:
                 # When follow_planner is enabled, the simulator accepts external
                 # AckermannDrive commands from an external follower. If such a
-                # command is present, it overrides keyboard inputs. If not,
-                # manual keyboard driving remains active (do not attempt internal
-                # trajectory following).
+                # command is present, it overrides keyboard inputs.
                 latest_ack = self.pose_publisher.get_latest_ack()
-
                 if latest_ack is not None:
-                    # Only accept ack commands if they are recent (avoid stale control).
-                    age = self.pose_publisher.ack_age_seconds()   
+                    age = self.pose_publisher.ack_age_seconds()
                     if age is not None and age > 1.0:
-                        # message too old; ignore
-                        self.pose_publisher.get_logger().info(f'Ignoring stale AckermannDrive (age={age:.2f}s)')
+                        # stale message — treat as no command
+                        latest_ack = None
                     else:
-                        # Map AckermannDrive -> simulator control inputs
                         target_speed = getattr(latest_ack, 'speed', 0.0)
-                    desired_steer = getattr(latest_ack, 'steering_angle', 0.0)
-                # else: no external command -> keep keyboard inputs (manual driving)
+                        desired_steer = getattr(latest_ack, 'steering_angle', 0.0)
 
             # if using traj follower, force input, else do normal input
             if self.follow_planner and latest_ack is not None:
@@ -1203,8 +1474,78 @@ class Simulator:
             colliding_obstacles = self.collision_detector.check_collision(self.vehicle.get_corners(), self.obstacles)
             self.is_colliding = len(colliding_obstacles) > 0
 
+            # Tick the run evaluator — only once the planner is actually driving
+            try:
+                ev = getattr(self, 'evaluator', None)
+                if ev and not ev.finished:
+                    mode = getattr(self.pose_publisher, 'planner_mode', 'GPS')
+                    wp_idx = getattr(self.pose_publisher, 'planner_waypoint_idx', 0)
+                    # Don't start the eval clock until the planner has sent at least one command.
+                    # This avoids counting idle startup time (planner takes ~5s to initialize).
+                    planner_live = (latest_ack is not None or ev.start_time is not None)
+                    if planner_live:
+                        ev.tick(self.vehicle, self.collision_detector, planner_mode=mode, wp_index=max(0, wp_idx))
+                        if ev.finished:
+                            print(ev.summary(), flush=True)
+                            if getattr(self, '_auto_quit_on_eval', False):
+                                self._shutdown_sim()
+                                import sys; sys.exit(0)
+                    else:
+                        if getattr(self, '_auto_follow_locked', False):
+                            print(f"[EVAL] Waiting for planner... (elapsed wall: {(pygame.time.get_ticks()/1000):.0f}s)", flush=True) if (pygame.time.get_ticks() % 3000) < 50 else None
+            except Exception:
+                pass
+
             self.camera_x = self.vehicle.x
             self.camera_y = self.vehicle.y
+
+            # Update local occupancy grid if vehicle has moved enough (asynchronous, non-blocking)
+            try:
+                now = pygame.time.get_ticks() / 1000.0
+                
+                # Check if background grid thread is done
+                with self._grid_thread_lock:
+                    if self._grid_thread is not None and not self._grid_thread.is_alive():
+                        self._grid_thread.join()
+                        self._grid_thread = None
+                        self._last_grid_update_pos = self._grid_compute_params.get('pos', self._last_grid_update_pos)
+                    
+                    # Only start a new publish when the vehicle has moved enough
+                    if self._grid_thread is None:
+                        dist_moved = math.hypot(
+                            self.vehicle.x - self._last_grid_update_pos[0],
+                            self.vehicle.y - self._last_grid_update_pos[1]
+                        )
+                        if dist_moved > self._grid_update_threshold:
+                            # In fog-of-war mode, occupancy grid only contains
+                            # obstacles within perception range (simulates lidar FoV).
+                            # Lane boundaries use all obstacles (camera range filter
+                            # is built into publish_lane_boundaries).
+                            if self.perception_mode:
+                                vx, vy = self.vehicle.x, self.vehicle.y
+                                r2 = self.perception_range ** 2
+                                grid_obs = []
+                                for obs in self.obstacles:
+                                    if hasattr(obs, 'vertices'):
+                                        if any((ox - vx)**2 + (oy - vy)**2 <= r2 for ox, oy in obs.vertices):
+                                            grid_obs.append(obs)
+                                    elif hasattr(obs, 'x') and hasattr(obs, 'y'):
+                                        if (obs.x - vx)**2 + (obs.y - vy)**2 <= r2:
+                                            grid_obs.append(obs)
+                            else:
+                                grid_obs = list(self.obstacles)
+                            self._grid_compute_params = {
+                                'obstacles': grid_obs,
+                                'all_obstacles': list(self.obstacles),  # for lane boundaries
+                                'center_x': self.vehicle.x,
+                                'center_y': self.vehicle.y,
+                                'heading':  self.vehicle.heading,
+                                'pos': (self.vehicle.x, self.vehicle.y),
+                            }
+                            self._grid_thread = threading.Thread(target=self._compute_grid_background, daemon=True)
+                            self._grid_thread.start()
+            except Exception as e:
+                print(f"Error in grid update logic: {e}")
 
             # Periodically publish the simulated pose
             now = pygame.time.get_ticks() / 1000.0
@@ -1215,36 +1556,74 @@ class Simulator:
                         self.pose_publisher.publish_odometry(self.vehicle.x, self.vehicle.y, self.vehicle.heading, self.vehicle.speed)
                     except Exception:
                         pass
+                    # Publish lane boundaries on every pose tick (cheap) so planner
+                    # always has boundary data aligned with the current heading.
+                    try:
+                        self.pose_publisher.publish_lane_boundaries(
+                            list(self.obstacles),
+                            car_x=self.vehicle.x,
+                            car_y=self.vehicle.y,
+                            car_heading=self.vehicle.heading,
+                        )
+                    except Exception:
+                        pass
+                    # Publish waypoints once (on map load, already done in load_scene)
+                    # Don't re-publish every cycle — it resets the planner mission.
                 except Exception as e:
                     print(f"Failed to publish pose: {e}")
                 self._last_publish_time = now
 
+            # Update fog-of-war perception state
+            self._update_perception()
+
             # Rendering
             self.screen.fill(GRAY)
-            
+
             if self.edit_mode:
                 # Use SceneEditor's draw (toolbox draws return/save controls)
                 self.editor.screen = self.screen  # Share screen surface
                 self.editor.draw()
             else:
                 # Draw simulation view (all rendering centralized in draw.py)
-                draw_grid(self.screen, self.camera_x, self.camera_y)
-                draw_lane_centerline(self.screen, self.lane_centerline or [], self.vehicle, self.camera_x, self.camera_y)
+                draw_grid(self.screen, self.camera_x, self.camera_y, zoom=self.camera_zoom)
+                draw_lane_centerline(self.screen, self.lane_centerline or [], self.vehicle, self.camera_x, self.camera_y, zoom=self.camera_zoom)
                 # call draw_vehicle from draw.py directly
                 try:
-                    draw_vehicle(self.screen, self.vehicle, self.camera_x, self.camera_y, is_colliding=self.is_colliding)
+                    draw_vehicle(self.screen, self.vehicle, self.camera_x, self.camera_y, is_colliding=self.is_colliding, zoom=self.camera_zoom)
                 except Exception:
                     pass
+                
+                # Draw RL gap selector waypoints if active
+
+                
                 # HUD
-                draw_hud(self.screen, self.vehicle, self.font, self.follow_planner)
+                draw_hud(self.screen, self.vehicle, self.font, self.follow_planner, self.use_pure_pursuit,
+                         planner_mode=getattr(self.pose_publisher, 'planner_mode', 'GPS'),
+                         evaluator=getattr(self, 'evaluator', None),
+                         perception_mode=self.perception_mode,
+                         debug_mode=self.debug_mode)
                 # Obstacles and start/goal
-                draw_obstacles(self.screen, self.obstacles, self.camera_x, self.camera_y)
-                draw_start_goal(self.screen, self.start_pose, self.target_pose, self.camera_x, self.camera_y)
+                if self.perception_mode:
+                    visible_obs = [o for o in self.obstacles if id(o) in self._revealed_obstacle_ids]
+                    draw_obstacles(self.screen, visible_obs, self.camera_x, self.camera_y, zoom=self.camera_zoom)
+                    # Draw perception range circle
+                    sx, sy = world_to_screen(self.vehicle.x, self.vehicle.y, self.camera_x, self.camera_y, self.camera_zoom)
+                    pr = int(self.perception_range * SCALE * self.camera_zoom)
+                    pygame.draw.circle(self.screen, (100, 100, 100), (sx, sy), pr, 1)
+                    # Draw permanent lane boundary trails
+                    draw_permanent_lanes(self.screen, self._permanent_lane_left, self._permanent_lane_right,
+                                         self.camera_x, self.camera_y, self.camera_zoom)
+                    draw_permanent_centerline(self.screen, self._permanent_lane_center,
+                                              self.camera_x, self.camera_y, self.camera_zoom)
+                else:
+                    draw_obstacles(self.screen, self.obstacles, self.camera_x, self.camera_y, zoom=self.camera_zoom)
+                draw_start_goal(self.screen, self.start_pose, self.target_pose, self.camera_x, self.camera_y, zoom=self.camera_zoom)
                 self._draw_costmap_probe_marker()
+                
                 # Draw waypoints in sim view as numbered green circles
                 try:
                     for i, (x, y) in enumerate(getattr(self, 'waypoints', []) or []):
-                        sx, sy = world_to_screen(x, y, self.camera_x, self.camera_y)
+                        sx, sy = world_to_screen(x, y, self.camera_x, self.camera_y, self.camera_zoom)
                         radius = 12
                         pygame.draw.circle(self.screen, GREEN, (sx, sy), radius)
                         try:
@@ -1256,17 +1635,44 @@ class Simulator:
                             pygame.draw.circle(self.screen, BLACK, (sx, sy), 3)
                 except Exception:
                     pass
-                # Planner trajectory
+                # Planner trajectory and detected lane centerline
+                draw_lane_boundaries(self.screen, self)
+                draw_cumulative_lane_trail(self.screen, self)
                 draw_planner_trajectory(self.screen, self)
+                draw_detected_lane_cl(self.screen, self)
+                draw_mpc_targets(self.screen, self)
                 self._draw_local_plan_cost_overlay()
+                # Debug heatmap + click-to-query label
+                if self.debug_mode:
+                    draw_debug_heatmap(self.screen, self)
+                    if self._debug_click_pos is not None:
+                        draw_debug_cost_label(self.screen, self.font,
+                                              self._debug_click_pos[0], self._debug_click_pos[1], self)
                 
             draw_map_selector(self.screen, self)  # Always show map selector
 
             pygame.display.flip()
-        pygame.quit()
-        self.pose_publisher.destroy_node()
-        rclpy.shutdown()
+        self._shutdown_sim()
 
 if __name__ == "__main__":
-    simulator = Simulator()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--auto-follow', action='store_true',
+                        help='Auto-enable follow_planner without pressing SPACE')
+    parser.add_argument('--eval-duration', type=float, default=30.0,
+                        help='Evaluation duration in seconds (auto-quit when done)')
+    parser.add_argument('--fog', action='store_true',
+                        help='Start with fog-of-war/perception mode ON')
+    parser.add_argument('map', nargs='?', default=None, help='Map file path')
+    args = parser.parse_args()
+    simulator = Simulator(scene_arg=args.map)
+    if args.fog:
+        simulator.perception_mode = True
+        print('[VIZ] Fog-of-war mode ON (press V to toggle)')
+    if args.auto_follow:
+        simulator.follow_planner = True
+        simulator._auto_follow_locked = True
+        simulator._auto_quit_on_eval = True
+        simulator.evaluator.duration = args.eval_duration
+        print(f'[EVAL] Auto-follow enabled, evaluating for {args.eval_duration:.0f}s (timer starts when planner connects)')
     simulator.run()

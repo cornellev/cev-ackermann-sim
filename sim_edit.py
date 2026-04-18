@@ -15,6 +15,9 @@ class SceneEditor:
         self.font = pygame.font.SysFont('monospace', 18)
         self.camera_x = 0
         self.camera_y = 0
+        self.camera_zoom = 1.0  # Zoom factor (1.0 = normal, 0.5 = zoomed out 2x, 2.0 = zoomed in 2x)
+        self.camera_zoom_min = 0.25
+        self.camera_zoom_max = 3.0
         self.dragging = False
         self.drag_last = None
         self.obstacles = []
@@ -74,6 +77,8 @@ class SceneEditor:
         self.moving_obs_idx = None
         # waypoint move state: index being moved or None
         self.moving_waypoint_idx = None
+        # Track which obstacles are lanes (for JSON serialization)
+        self.lane_obstacle_indices = set()
         
         # Top-right buttons setup
         padding = 10
@@ -147,7 +152,7 @@ class SceneEditor:
             
             # Add obstacles with full properties
             scene['obstacles'] = []
-            for obs in self.obstacles:
+            for idx, obs in enumerate(self.obstacles):
                 if isinstance(obs, CircleObstacle):
                     scene['obstacles'].append({
                         'type': 'circle',
@@ -156,8 +161,10 @@ class SceneEditor:
                         'radius': obs.radius
                     })
                 elif isinstance(obs, PolygonObstacle):
+                    # Check if this polygon is marked as a lane
+                    obs_type = 'lane' if idx in self.lane_obstacle_indices else 'polygon'
                     scene['obstacles'].append({
-                        'type': 'polygon',
+                        'type': obs_type,
                         'vertices': obs.vertices,
                         'color': obs.color
                     })
@@ -206,25 +213,25 @@ class SceneEditor:
         self.screen.fill(GRAY)
 
         # Grid
-        draw_grid(self.screen, self.camera_x, self.camera_y)
+        draw_grid(self.screen, self.camera_x, self.camera_y, zoom=self.camera_zoom)
 
         # Obstacles
-        draw_obstacles(self.screen, self.obstacles, self.camera_x, self.camera_y)
+        draw_obstacles(self.screen, self.obstacles, self.camera_x, self.camera_y, zoom=self.camera_zoom)
         try:
-            draw_lane_centerline(self.screen, self.lane_points(), None, self.camera_x, self.camera_y)
+            draw_lane_centerline(self.screen, self.lane_points(), None, self.camera_x, self.camera_y, zoom=self.camera_zoom)
         except Exception:
             pass
 
         # Start/Goal (shared util)
         try:
-            draw_start_goal(self.screen, self.start_pose, self.goal_pose, self.camera_x, self.camera_y)
+            draw_start_goal(self.screen, self.start_pose, self.goal_pose, self.camera_x, self.camera_y, zoom=self.camera_zoom)
         except Exception:
             pass
 
         # Waypoints: draw numbered green circles (1..N)
         try:
             for i, (x, y) in enumerate(getattr(self, 'waypoints', []) or []):
-                sx, sy = world_to_screen(x, y, self.camera_x, self.camera_y)
+                sx, sy = world_to_screen(x, y, self.camera_x, self.camera_y, self.camera_zoom)
                 radius = 12
                 # circle background
                 pygame.draw.circle(self.screen, GREEN, (sx, sy), radius)
@@ -242,7 +249,7 @@ class SceneEditor:
 
         # Temp polygon preview
         if len(self.temp_polygon) > 0:
-            pts = [world_to_screen(x, y, self.camera_x, self.camera_y) for x, y in self.temp_polygon]
+            pts = [world_to_screen(x, y, self.camera_x, self.camera_y, self.camera_zoom) for x, y in self.temp_polygon]
             if len(pts) > 1:
                 pygame.draw.lines(self.screen, YELLOW, False, pts, 2)
             for p in pts:
@@ -252,9 +259,9 @@ class SceneEditor:
         if self.line_start is not None:
             try:
                 mx, my = pygame.mouse.get_pos()
-                wx, wy = screen_to_world(mx, my, self.camera_x, self.camera_y)
-                start_screen = world_to_screen(self.line_start[0], self.line_start[1], self.camera_x, self.camera_y)
-                end_screen = world_to_screen(wx, wy, self.camera_x, self.camera_y)
+                wx, wy = screen_to_world(mx, my, self.camera_x, self.camera_y, self.camera_zoom)
+                start_screen = world_to_screen(self.line_start[0], self.line_start[1], self.camera_x, self.camera_y, self.camera_zoom)
+                end_screen = world_to_screen(wx, wy, self.camera_x, self.camera_y, self.camera_zoom)
                 pygame.draw.line(self.screen, WHITE, start_screen, end_screen, 2)
                 pygame.draw.circle(self.screen, WHITE, start_screen, 4)
             except Exception:
@@ -263,10 +270,10 @@ class SceneEditor:
         # If in angling mode for start/goal show a preview: bulb at anchor and line to mouse cursor
         try:
             mx, my = pygame.mouse.get_pos()
-            wx, wy = screen_to_world(mx, my, self.camera_x, self.camera_y)
+            wx, wy = screen_to_world(mx, my, self.camera_x, self.camera_y, self.camera_zoom)
             if getattr(self, 'placing_start_angling', False) and self.placing_start_anchor is not None:
                 ax, ay = self.placing_start_anchor
-                a_screen = world_to_screen(ax, ay, self.camera_x, self.camera_y)
+                a_screen = world_to_screen(ax, ay, self.camera_x, self.camera_y, self.camera_zoom)
                 pygame.draw.circle(self.screen, START_COLOR, a_screen, 8)
                 # compute capped preview point based on ANGLE_PREVIEW_LENGTH
                 dx = wx - ax
@@ -278,11 +285,11 @@ class SceneEditor:
                     py = ay + dy * scale
                 else:
                     px, py = ax + ANGLE_PREVIEW_LENGTH, ay
-                cursor_screen = world_to_screen(px, py, self.camera_x, self.camera_y)
+                cursor_screen = world_to_screen(px, py, self.camera_x, self.camera_y, self.camera_zoom)
                 pygame.draw.line(self.screen, START_COLOR, a_screen, cursor_screen, 2)
             if getattr(self, 'placing_goal_angling', False) and self.placing_goal_anchor is not None:
                 ax, ay = self.placing_goal_anchor
-                a_screen = world_to_screen(ax, ay, self.camera_x, self.camera_y)
+                a_screen = world_to_screen(ax, ay, self.camera_x, self.camera_y, self.camera_zoom)
                 pygame.draw.circle(self.screen, GOAL_COLOR, a_screen, 8)
                 dx = wx - ax
                 dy = wy - ay
@@ -293,7 +300,7 @@ class SceneEditor:
                     py = ay + dy * scale
                 else:
                     px, py = ax + ANGLE_PREVIEW_LENGTH, ay
-                cursor_screen = world_to_screen(px, py, self.camera_x, self.camera_y)
+                cursor_screen = world_to_screen(px, py, self.camera_x, self.camera_y, self.camera_zoom)
                 pygame.draw.line(self.screen, GOAL_COLOR, a_screen, cursor_screen, 2)
         except Exception:
             pass

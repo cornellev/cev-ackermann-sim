@@ -53,62 +53,64 @@ class CubicPolynomial:
         return (3.0 * self.a3 * x + 2.0 * self.a2) * x + self.a1
 
 
-def world_to_screen(x, y, camera_x, camera_y):
-    sx = int((x - camera_x) * SCALE + SCREEN_WIDTH / 2)
-    sy = int(-(y - camera_y) * SCALE + SCREEN_HEIGHT / 2)
+def world_to_screen(x, y, camera_x, camera_y, zoom=1.0):
+    sx = int((x - camera_x) * SCALE * zoom + SCREEN_WIDTH / 2)
+    sy = int(-(y - camera_y) * SCALE * zoom + SCREEN_HEIGHT / 2)
     return sx, sy
 
 
-def screen_to_world(sx, sy, camera_x, camera_y):
-    wx = (sx - SCREEN_WIDTH/2) / SCALE + camera_x
-    wy = -((sy - SCREEN_HEIGHT/2) / SCALE) + camera_y
+def screen_to_world(sx, sy, camera_x, camera_y, zoom=1.0):
+    wx = (sx - SCREEN_WIDTH/2) / (SCALE * zoom) + camera_x
+    wy = -((sy - SCREEN_HEIGHT/2) / (SCALE * zoom)) + camera_y
     return wx, wy
 
 
-def draw_start_goal(surface, start_pose, goal_pose, camera_x, camera_y):
+def draw_start_goal(surface, start_pose, goal_pose, camera_x, camera_y, zoom=1.0):
     """Draw start and goal poses with orientation indicators."""
     if start_pose is not None:
         sx, sy, stheta = start_pose
-        s_pos = world_to_screen(sx, sy, camera_x, camera_y)
+        s_pos = world_to_screen(sx, sy, camera_x, camera_y, zoom)
         pygame.draw.circle(surface, START_COLOR, s_pos, 8)
         stx = sx + 0.75 * math.cos(stheta)
         sty = sy + 0.75 * math.sin(stheta)
-        pygame.draw.line(surface, START_COLOR, s_pos, world_to_screen(stx, sty, camera_x, camera_y), 3)
+        pygame.draw.line(surface, START_COLOR, s_pos, world_to_screen(stx, sty, camera_x, camera_y, zoom), 3)
     
     if goal_pose is not None:
         gx, gy, gtheta = goal_pose
-        g_pos = world_to_screen(gx, gy, camera_x, camera_y)
+        g_pos = world_to_screen(gx, gy, camera_x, camera_y, zoom)
         pygame.draw.circle(surface, GOAL_COLOR, g_pos, 8)
         gtx = gx + 0.75 * math.cos(gtheta)
         gty = gy + 0.75 * math.sin(gtheta)
-        pygame.draw.line(surface, GOAL_COLOR, g_pos, world_to_screen(gtx, gty, camera_x, camera_y), 3)
+        pygame.draw.line(surface, GOAL_COLOR, g_pos, world_to_screen(gtx, gty, camera_x, camera_y, zoom), 3)
 
 
-def draw_grid(surface, camera_x, camera_y, grid_size=50):
+
+
+def draw_grid(surface, camera_x, camera_y, grid_size=50, zoom=1.0):
     """Draw a grid centered on the camera position."""
     for i in range(-grid_size, grid_size + 1):
-        start_pos = world_to_screen(i, -grid_size, camera_x, camera_y)
-        end_pos = world_to_screen(i, grid_size, camera_x, camera_y)
+        start_pos = world_to_screen(i, -grid_size, camera_x, camera_y, zoom)
+        end_pos = world_to_screen(i, grid_size, camera_x, camera_y, zoom)
         pygame.draw.line(surface, LIGHT_GRAY, start_pos, end_pos, 1)
-        start_pos = world_to_screen(-grid_size, i, camera_x, camera_y)
-        end_pos = world_to_screen(grid_size, i, camera_x, camera_y)
+        start_pos = world_to_screen(-grid_size, i, camera_x, camera_y, zoom)
+        end_pos = world_to_screen(grid_size, i, camera_x, camera_y, zoom)
         pygame.draw.line(surface, LIGHT_GRAY, start_pos, end_pos, 1)
 
 
-def draw_obstacles(surface, obstacles, camera_x, camera_y):
+def draw_obstacles(surface, obstacles, camera_x, camera_y, zoom=1.0):
     """Draw all obstacles using their draw method."""
     if not obstacles:
         return
         
     def _w2s(x, y):
-        return world_to_screen(x, y, camera_x, camera_y)
+        return world_to_screen(x, y, camera_x, camera_y, zoom)
         
     for obs in obstacles:
         if hasattr(obs, 'draw'):
             obs.draw(surface, _w2s)
 
 
-def draw_lane_centerline(surface, lane_points, vehicle, camera_x, camera_y, max_points=6):
+def draw_lane_centerline(surface, lane_points, vehicle, camera_x, camera_y, max_points=6, zoom=1.0):
     """Render lane centerline starting from the closest point in front of the vehicle."""
     if not lane_points:
         return
@@ -130,9 +132,9 @@ def draw_lane_centerline(surface, lane_points, vehicle, camera_x, camera_y, max_
         end_idx = len(lane_points)
 
     subset = lane_points[start_idx:end_idx]
-    for p in [world_to_screen(x, y, camera_x, camera_y) for x, y in subset]:
+    for p in [world_to_screen(x, y, camera_x, camera_y, zoom) for x, y in subset]:
         try:
-            pygame.draw.circle(surface, GREEN, p, 4)
+            pygame.draw.circle(surface, ORANGE, p, 4)
         except Exception:
             pass
 
@@ -152,7 +154,7 @@ def draw_lane_centerline(surface, lane_points, vehicle, camera_x, camera_y, max_
     span = max_x - min_x
     # Draw the polynomial beyond just the fitted samples so the full curve is visible.
     extend = max(span, 3.0)
-    view_half_width = SCREEN_WIDTH / (2.0 * SCALE)
+    view_half_width = SCREEN_WIDTH / (2.0 * SCALE * zoom)
     draw_min = min(min_x - extend, camera_x - view_half_width - 2.0)
     draw_max = max(max_x + extend, camera_x + view_half_width + 2.0)
 
@@ -162,13 +164,13 @@ def draw_lane_centerline(surface, lane_points, vehicle, camera_x, camera_y, max_
     t = draw_min
     while t <= draw_max + 1e-6:
         y = cubic.at(t)
-        samples.append(world_to_screen(t, y, camera_x, camera_y))
+        samples.append(world_to_screen(t, y, camera_x, camera_y, zoom))
         t += step
-    samples.append(world_to_screen(draw_max, cubic.at(draw_max), camera_x, camera_y))
+    samples.append(world_to_screen(draw_max, cubic.at(draw_max), camera_x, camera_y, zoom))
 
     if len(samples) >= 2:
         try:
-            pygame.draw.lines(surface, GREEN, False, samples, 2)
+            pygame.draw.lines(surface, ORANGE, False, samples, 2)
         except Exception:
             pass
 
@@ -290,7 +292,7 @@ def draw_map_selector(surface, sim):
     surface.blit(text, text_rect)
 
 
-def draw_wheel(surface, center_x, center_y, width, length, wheel_angle, camera_x, camera_y):
+def draw_wheel(surface, center_x, center_y, width, length, wheel_angle, camera_x, camera_y, zoom=1.0):
     """Helper to draw a single wheel given world coords and wheel angle."""
     half_length = length / 2
     half_width = width / 2
@@ -305,11 +307,11 @@ def draw_wheel(surface, center_x, center_y, width, length, wheel_angle, camera_x
         x_world = center_x + x_local * math.cos(wheel_angle) - y_local * math.sin(wheel_angle)
         y_world = center_y + x_local * math.sin(wheel_angle) + y_local * math.cos(wheel_angle)
         world_corners.append((x_world, y_world))
-    screen_corners = [world_to_screen(x, y, camera_x, camera_y) for x, y in world_corners]
+    screen_corners = [world_to_screen(x, y, camera_x, camera_y, zoom) for x, y in world_corners]
     pygame.draw.polygon(surface, BLACK, screen_corners)
 
 
-def draw_vehicle(surface, vehicle, camera_x, camera_y, is_colliding=False):
+def draw_vehicle(surface, vehicle, camera_x, camera_y, is_colliding=False, zoom=1.0):
     """Draw the vehicle polygon, front indicator line, and wheels.
 
     vehicle: object with x,y,heading,length,width,wheelbase,track_width,steering_angle
@@ -328,15 +330,15 @@ def draw_vehicle(surface, vehicle, camera_x, camera_y, is_colliding=False):
         x_world = vehicle.x + x_local * math.cos(vehicle.heading) - y_local * math.sin(vehicle.heading)
         y_world = vehicle.y + x_local * math.sin(vehicle.heading) + y_local * math.cos(vehicle.heading)
         world_corners.append((x_world, y_world))
-    screen_corners = [world_to_screen(x, y, camera_x, camera_y) for x, y in world_corners]
+    screen_corners = [world_to_screen(x, y, camera_x, camera_y, zoom) for x, y in world_corners]
     vehicle_color = RED if is_colliding else LIGHT_BLUE
     pygame.draw.polygon(surface, vehicle_color, screen_corners)
 
     # Front indicator line
     front_mid_x = (world_corners[0][0] + world_corners[1][0]) / 2
     front_mid_y = (world_corners[0][1] + world_corners[1][1]) / 2
-    center_screen = world_to_screen(vehicle.x, vehicle.y, camera_x, camera_y)
-    front_screen = world_to_screen(front_mid_x, front_mid_y, camera_x, camera_y)
+    center_screen = world_to_screen(vehicle.x, vehicle.y, camera_x, camera_y, zoom)
+    front_screen = world_to_screen(front_mid_x, front_mid_y, camera_x, camera_y, zoom)
     pygame.draw.line(surface, YELLOW, center_screen, front_screen, 3)
 
     # Wheels
@@ -348,7 +350,7 @@ def draw_vehicle(surface, vehicle, camera_x, camera_y, is_colliding=False):
     for side in [-1, 1]:
         back_wheel_x = vehicle.x - half_wheelbase * math.cos(vehicle.heading) + side * half_track * math.cos(vehicle.heading + math.pi/2)
         back_wheel_y = vehicle.y - half_wheelbase * math.sin(vehicle.heading) + side * half_track * math.sin(vehicle.heading + math.pi/2)
-        draw_wheel(surface, back_wheel_x, back_wheel_y, wheel_width, wheel_length, vehicle.heading, camera_x, camera_y)
+        draw_wheel(surface, back_wheel_x, back_wheel_y, wheel_width, wheel_length, vehicle.heading, camera_x, camera_y, zoom)
 
     # Front wheels (steering)
     right_wheel_angle = math.atan((vehicle.wheelbase*math.tan(vehicle.steering_angle))/(vehicle.wheelbase + (vehicle.track_width/2)*math.tan(vehicle.steering_angle)))
@@ -356,16 +358,11 @@ def draw_vehicle(surface, vehicle, camera_x, camera_y, is_colliding=False):
     for side, wheel_angle in zip([-1, 1], [right_wheel_angle, left_wheel_angle]):
         front_wheel_x = vehicle.x + half_wheelbase * math.cos(vehicle.heading) + side * half_track * math.cos(vehicle.heading + math.pi/2)
         front_wheel_y = vehicle.y + half_wheelbase * math.sin(vehicle.heading) + side * half_track * math.sin(vehicle.heading + math.pi/2)
-        draw_wheel(surface, front_wheel_x, front_wheel_y, wheel_width, wheel_length, vehicle.heading + wheel_angle, camera_x, camera_y)
+        draw_wheel(surface, front_wheel_x, front_wheel_y, wheel_width, wheel_length, vehicle.heading + wheel_angle, camera_x, camera_y, zoom)
 
 
-def draw_hud(surface, vehicle, font, follow_planner):
-    """Displays vehicle state information on the screen (HUD).
-
-    Kept here so all rendering is centralized in draw.py. Parameters are the minimal
-    primitives required for rendering: the surface, the vehicle object, a pygame
-    Font object, and whether the planner-follow flag is set.
-    """
+def draw_hud(surface, vehicle, font, follow_planner, use_pure_pursuit=False, planner_mode=None, evaluator=None, perception_mode=False, debug_mode=False):
+    """Displays vehicle state information on the screen (HUD)."""
     try:
         speed_kmh = vehicle.speed * 3.6
         steer_deg = math.degrees(vehicle.steering_angle)
@@ -381,11 +378,292 @@ def draw_hud(surface, vehicle, font, follow_planner):
             text_surface = font.render(line, True, WHITE)
             surface.blit(text_surface, (10, 10 + i * 25))
 
-            follow_text = f"Follow planner: {'ON' if follow_planner else 'OFF'}"
-            follow_surface = font.render(follow_text, True, GREEN if follow_planner else FOLLOW_OFF)
-            surface.blit(follow_surface, (10, 10 + len(info) * 25))
+        follow_text = f"Follow planner (SPACE): {'ON' if follow_planner else 'OFF'}"
+        follow_surface = font.render(follow_text, True, GREEN if follow_planner else FOLLOW_OFF)
+        surface.blit(follow_surface, (10, 10 + len(info) * 25))
+
+        pp_text = f"Pure Pursuit (U): {'ON' if use_pure_pursuit else 'OFF'}"
+        pp_surface = font.render(pp_text, True, LIGHT_BLUE if use_pure_pursuit else FOLLOW_OFF)
+        surface.blit(pp_surface, (10, 10 + (len(info) + 1) * 25))
+
+        pm_text = f"Perception/FOW (V): {'ON' if perception_mode else 'OFF'}"
+        pm_surface = font.render(pm_text, True, (200, 200, 50) if perception_mode else FOLLOW_OFF)
+        surface.blit(pm_surface, (10, 10 + (len(info) + 2) * 25))
+
+        dbg_text = f"Debug heatmap (D): {'ON — click for cost' if debug_mode else 'OFF'}"
+        dbg_surface = font.render(dbg_text, True, (255, 200, 0) if debug_mode else FOLLOW_OFF)
+        surface.blit(dbg_surface, (10, 10 + (len(info) + 3) * 25))
+
+        # --- Evaluator score (top-right) ---
+        if evaluator is not None:
+            try:
+                ev = evaluator
+                elapsed = ev.elapsed
+                score_text = f"EVAL: {ev.score:+.0f}  t={elapsed:.0f}s  col={len(ev.collision_events)}  wp={ev.waypoints_reached}"
+                ev_color = (0, 220, 0) if ev.score >= 0 else (255, 80, 80)
+                if ev.finished:
+                    ev_color = (255, 255, 0)
+                    score_text = "EVAL DONE: " + score_text[6:]
+                ev_surf = font.render(score_text, True, ev_color)
+                ev_rect = ev_surf.get_rect()
+                ev_rect.topright = (SCREEN_WIDTH - 10, 50)
+                bg = ev_rect.inflate(10, 6)
+                pygame.draw.rect(surface, (20, 20, 20), bg, border_radius=3)
+                surface.blit(ev_surf, ev_rect)
+            except Exception:
+                pass
+
+        # --- Mode indicator: bottom-centre ---
+        raw_mode = planner_mode or 'GPS'
+        parts = raw_mode.split(':')
+        mode = parts[0]   # 'LANE' or 'GPS'
+        wp_idx = int(parts[1]) if len(parts) > 1 else -1
+        is_lane = (mode == 'LANE')
+        if is_lane:
+            mode_text = 'LANE MODE'
+        elif wp_idx >= 0:
+            mode_text = f'GPS MODE  \u2192  WP {wp_idx}'
+        else:
+            mode_text = 'GPS MODE'
+        mode_color = (0, 220, 0) if is_lane else (220, 180, 0)
+        try:
+            big_font = pygame.font.SysFont('monospace', 22, bold=True)
+        except Exception:
+            big_font = font
+        mode_surf = big_font.render(mode_text, True, mode_color)
+        mode_rect = mode_surf.get_rect()
+        mode_rect.midbottom = (SCREEN_WIDTH // 2, SCREEN_HEIGHT - 8)
+        bg_rect = mode_rect.inflate(20, 10)
+        pygame.draw.rect(surface, (20, 20, 20), bg_rect, border_radius=5)
+        surface.blit(mode_surf, mode_rect)
     except Exception:
-        # Rendering should never raise for HUD; swallow errors
+        pass
+
+
+def draw_detected_lane_cl(surface, sim):
+    """Draw the detected lane centerline (from scan_lane) as cyan dots."""
+    try:
+        pts = getattr(sim.pose_publisher, 'detected_lane_pts', [])
+        if not pts:
+            return
+        cam_x = getattr(sim, 'camera_x', 0.0)
+        cam_y = getattr(sim, 'camera_y', 0.0)
+        zoom  = getattr(sim, 'camera_zoom', 1.0)
+        for i, (wx, wy) in enumerate(pts):
+            sx, sy = world_to_screen(wx, wy, cam_x, cam_y, zoom)
+            r = 5 if i in (3, 8) else 3  # highlight the two MPC target indices
+            color = (0, 255, 255) if i not in (3, 8) else (255, 200, 0)
+            pygame.draw.circle(surface, color, (sx, sy), r)
+            if i > 0:
+                px, py = pts[i - 1]
+                sxp, syp = world_to_screen(px, py, cam_x, cam_y, zoom)
+                pygame.draw.line(surface, (0, 200, 200), (sxp, syp), (sx, sy), 1)
+    except Exception:
+        pass
+
+
+def _get_cost_arr(sim):
+    """Return the planner's Gaussian cost field (received via /cost_field topic)."""
+    pub = sim.pose_publisher
+    return getattr(pub, 'last_cost_arr', None)
+
+
+def draw_debug_heatmap(surface, sim):
+    """Render Gaussian cost field as colour heatmap overlay.
+    Prefers the planner's cost field (from /cost_field topic), falls back to
+    local EDT + Gaussian on the raw occupancy grid."""
+    try:
+        arr = _get_cost_arr(sim)
+        if arr is None:
+            return
+        pub = sim.pose_publisher
+        ox, oy = pub.last_grid_origin
+        res     = pub.last_grid_res
+        cam_x   = sim.camera_x
+        cam_y   = sim.camera_y
+        zoom    = sim.camera_zoom
+
+        nx, ny = arr.shape
+        cell_px = max(1, int(res * SCALE * zoom))
+
+        for ix in range(nx):
+            for iy in range(ny):
+                v = arr[ix, iy]
+                if v <= 0:
+                    continue
+                # World centre of this cell
+                wx = ox + (ix + 0.5) * res
+                wy = oy + (iy + 0.5) * res
+                sx, sy = world_to_screen(wx, wy, cam_x, cam_y, zoom)
+                # Colour: 0→100 maps green→red
+                t = min(v / 100.0, 1.0)
+                r = int(50 + 205 * t)
+                g = int(200 * (1.0 - t))
+                b = 40
+                alpha = 180
+                cell_surf = pygame.Surface((cell_px, cell_px), pygame.SRCALPHA)
+                cell_surf.fill((r, g, b, alpha))
+                surface.blit(cell_surf, (sx - cell_px // 2, sy - cell_px // 2))
+    except Exception:
+        pass
+
+
+def draw_debug_cost_label(surface, font, wx, wy, sim):
+    """Print the cost field value at a clicked world position."""
+    try:
+        pub = sim.pose_publisher
+        arr = _get_cost_arr(sim)
+        if arr is None:
+            return
+        ox, oy = pub.last_grid_origin
+        res     = pub.last_grid_res
+        ix = int((wx - ox) / res)
+        iy = int((wy - oy) / res)
+        nx, ny = arr.shape
+        if 0 <= ix < nx and 0 <= iy < ny:
+            cost = int(arr[ix, iy])
+            sx, sy = world_to_screen(wx, wy, sim.camera_x, sim.camera_y, sim.camera_zoom)
+            label = font.render(f"cost={cost} ({wx:.1f},{wy:.1f})", True, (255, 255, 0))
+            surface.blit(label, (sx + 6, sy - 10))
+    except Exception:
+        pass
+
+
+def draw_cumulative_lane_trail(surface, sim):
+    """Draw the cumulative lane centerline trail (all detected positions over time)
+    as a persistent magenta/pink trail on the map. This lets the user see everywhere
+    the lane detector has found a centerline."""
+    try:
+        trail = getattr(sim.pose_publisher, 'cumulative_lane_trail', [])
+        if not trail:
+            return
+        cam_x = getattr(sim, 'camera_x', 0.0)
+        cam_y = getattr(sim, 'camera_y', 0.0)
+        zoom  = getattr(sim, 'camera_zoom', 1.0)
+        # Draw trail as connected line segments
+        screen_pts = [world_to_screen(wx, wy, cam_x, cam_y, zoom) for wx, wy in trail]
+        if len(screen_pts) >= 2:
+            pygame.draw.lines(surface, (220, 80, 220), False, screen_pts, 2)
+        # Draw dots at each trail point
+        for sp in screen_pts:
+            pygame.draw.circle(surface, (200, 60, 200), sp, 2)
+    except Exception:
+        pass
+
+
+def draw_mpc_targets(surface, sim):
+    """Draw the MPC planned trajectory waypoints as distinct markers.
+    These are the actual positions the MPC optimizer chose."""
+    try:
+        pts = getattr(sim.pose_publisher, 'mpc_target_pts', [])
+        if not pts:
+            return
+        cam_x = getattr(sim, 'camera_x', 0.0)
+        cam_y = getattr(sim, 'camera_y', 0.0)
+        zoom  = getattr(sim, 'camera_zoom', 1.0)
+        screen_pts = [world_to_screen(wx, wy, cam_x, cam_y, zoom) for wx, wy in pts]
+        # Draw path line
+        if len(screen_pts) >= 2:
+            pygame.draw.lines(surface, (255, 120, 0), False, screen_pts, 2)
+        # Draw each waypoint as an orange diamond
+        for i, (sx, sy) in enumerate(screen_pts):
+            r = 4
+            diamond = [(sx, sy - r), (sx + r, sy), (sx, sy + r), (sx - r, sy)]
+            pygame.draw.polygon(surface, (255, 140, 0), diamond)
+            if i == 0:
+                # First point gets a bigger ring to show MPC start
+                pygame.draw.circle(surface, (255, 100, 0), (sx, sy), 6, 2)
+    except Exception:
+        pass
+
+def draw_lane_boundaries(surface, sim):
+    """Draw the published lane boundary points (left=blue, right=red),
+    the midpoint centerline (purple), and, in debug mode only, the triangular
+    detection frustum."""
+    try:
+        cam_x = getattr(sim, 'camera_x', 0.0)
+        cam_y = getattr(sim, 'camera_y', 0.0)
+        zoom  = getattr(sim, 'camera_zoom', 1.0)
+        vx    = getattr(sim.vehicle, 'x', 0.0)
+        vy    = getattr(sim.vehicle, 'y', 0.0)
+        vh    = getattr(sim.vehicle, 'heading', 0.0)
+
+        if getattr(sim, 'debug_mode', False):
+            # Draw triangular detection frustum only in debug mode.
+            # Increased depth from 2m to 4m, preserving the 150-degree tip angle.
+            DETECT_FWD = 4.0
+            DETECT_LAT = math.tan(math.radians(75.0)) * DETECT_FWD
+            cos_h, sin_h = math.cos(vh), math.sin(vh)
+            # Triangle vertices in world coords: car position + two far corners
+            tip   = (vx, vy)
+            left_far  = (vx + cos_h * DETECT_FWD - sin_h * DETECT_LAT,
+                         vy + sin_h * DETECT_FWD + cos_h * DETECT_LAT)
+            right_far = (vx + cos_h * DETECT_FWD + sin_h * DETECT_LAT,
+                         vy + sin_h * DETECT_FWD - cos_h * DETECT_LAT)
+            pts = [
+                world_to_screen(*tip,       cam_x, cam_y, zoom),
+                world_to_screen(*left_far,  cam_x, cam_y, zoom),
+                world_to_screen(*right_far, cam_x, cam_y, zoom),
+            ]
+            pygame.draw.polygon(surface, (255, 220, 0), pts, 2)
+
+        # Left boundary (blue dots)
+        left = getattr(sim.pose_publisher, 'last_lane_left_pts', [])
+        for x, y in left:
+            sp = world_to_screen(x, y, cam_x, cam_y, zoom)
+            pygame.draw.circle(surface, (80, 120, 255), sp, 4)
+
+        # Right boundary (red dots)
+        right = getattr(sim.pose_publisher, 'last_lane_right_pts', [])
+        for x, y in right:
+            sp = world_to_screen(x, y, cam_x, cam_y, zoom)
+            pygame.draw.circle(surface, (255, 80, 80), sp, 4)
+
+        # Purple centerline dots — only when both sides are visible this frame
+        # and the paired points are at least 1.5m apart (so we're actually between two lanes).
+        MIN_LANE_SEP = 1.5
+        if left and right:
+            n = min(len(left), len(right))
+            for i in range(n):
+                sep = math.hypot(left[i][0] - right[i][0], left[i][1] - right[i][1])
+                if sep < MIN_LANE_SEP:
+                    continue
+                mx = (left[i][0] + right[i][0]) / 2.0
+                my = (left[i][1] + right[i][1]) / 2.0
+                sp = world_to_screen(mx, my, cam_x, cam_y, zoom)
+                pygame.draw.circle(surface, (180, 60, 220), sp, 5)
+
+    except Exception:
+        pass
+
+
+def draw_permanent_centerline(surface, center_pts, camera_x, camera_y, zoom=1.0):
+    """Draw persistently accumulated lane centerline points as purple dots.
+    Only points recorded when both lane boundaries were simultaneously visible."""
+    if not center_pts:
+        return
+    try:
+        for x, y in center_pts:
+            sp = world_to_screen(x, y, camera_x, camera_y, zoom)
+            pygame.draw.circle(surface, (180, 60, 220), sp, 4)
+    except Exception:
+        pass
+
+
+def draw_permanent_lanes(surface, left_pts, right_pts, camera_x, camera_y, zoom=1.0):
+    """Draw permanently accumulated lane boundary points as dots only (no connecting lines).
+    Left = blue, Right = red."""
+    def _draw_side(pts, color):
+        if not pts:
+            return
+        for x, y in pts:
+            s = world_to_screen(x, y, camera_x, camera_y, zoom)
+            pygame.draw.circle(surface, color, s, 3)
+
+    try:
+        _draw_side(left_pts, (60, 100, 255))
+        _draw_side(right_pts, (255, 60, 60))
+    except Exception:
         pass
 
 
@@ -406,7 +684,7 @@ def draw_planner_trajectory(surface, sim):
     points = []
     try:
         for wp in traj_msg.waypoints:
-            points.append(world_to_screen(wp.x, wp.y, sim.camera_x, sim.camera_y))
+            points.append(world_to_screen(wp.x, wp.y, sim.camera_x, sim.camera_y, sim.camera_zoom))
     except Exception:
         return
 
@@ -423,3 +701,98 @@ def draw_planner_trajectory(surface, sim):
             pygame.draw.circle(surface, YELLOW, p, 4)
         except Exception:
             pass
+
+def draw_plotter_visible_grid(surface, vehicle, camera_x, camera_y, grid_width_m=30.0, grid_height_m=30.0, resolution=0.2, zoom=1.0):
+    """Draw the visible grid window that the plotter sees (moving box).
+    
+    Shows the local area that occupancy grid computation considers.
+    This is the window the waypoint plotter is working within.
+    
+    Args:
+        grid_width_m: Width of grid in meters (center on vehicle)
+        grid_height_m: Height of grid in meters (center on vehicle)
+        resolution: Grid cell resolution in meters
+    """
+    if not vehicle:
+        return
+    
+    # Grid bounds (vehicle-centered)
+    half_width = grid_width_m / 2
+    half_height = grid_height_m / 2
+    
+    # World coordinates
+    left = vehicle.x - half_width
+    right = vehicle.x + half_width
+    bottom = vehicle.y - half_height
+    top = vehicle.y + half_height
+    
+    # Convert to screen coordinates
+    top_left = world_to_screen(left, top, camera_x, camera_y, zoom)
+    top_right = world_to_screen(right, top, camera_x, camera_y, zoom)
+    bottom_right = world_to_screen(right, bottom, camera_x, camera_y, zoom)
+    bottom_left = world_to_screen(left, bottom, camera_x, camera_y, zoom)
+    
+    # Draw semi-transparent box (grid visibility area)
+    pygame.draw.line(surface, (100, 200, 100), top_left, top_right, 2)  # Green top
+    pygame.draw.line(surface, (100, 200, 100), top_right, bottom_right, 2)  # Green right
+    pygame.draw.line(surface, (100, 200, 100), bottom_right, bottom_left, 2)  # Green bottom
+    pygame.draw.line(surface, (100, 200, 100), bottom_left, top_left, 2)  # Green left
+    
+    # Draw grid lines inside the visible area (0.2m resolution)
+    step_cells = max(1, int(resolution / 0.2))  # Draw every N cells
+    
+    # Vertical lines
+    x = left
+    while x <= right:
+        screen_x_y_top = world_to_screen(x, top, camera_x, camera_y, zoom)
+        screen_x_y_bot = world_to_screen(x, bottom, camera_x, camera_y, zoom)
+        pygame.draw.line(surface, (80, 150, 80), screen_x_y_top, screen_x_y_bot, 1)
+        x += resolution * 5  # Draw every 5th cell for readability
+    
+    # Horizontal lines
+    y = bottom
+    while y <= top:
+        screen_x_left_y = world_to_screen(left, y, camera_x, camera_y, zoom)
+        screen_x_right_y = world_to_screen(right, y, camera_x, camera_y, zoom)
+        pygame.draw.line(surface, (80, 150, 80), screen_x_left_y, screen_x_right_y, 1)
+        y += resolution * 5  # Draw every 5th cell for readability
+
+
+def draw_rl_waypoints(surface, rl_waypoints, rl_selected_gap, vehicle, camera_x, camera_y, zoom=1.0):
+    """Draw RL gap selector waypoints and selected gap direction.
+    In RL mode: draw gap direction line + waypoints
+    In lane mode: draw waypoints only (no line from vehicle)
+    
+    Args:
+        surface: Pygame surface
+        rl_waypoints: List of (x, y) intermediate waypoints
+        rl_selected_gap: Selected gap dict with 'angle' and 'distance' keys (None for lane mode)
+        vehicle: Vehicle object
+        camera_x, camera_y: Camera position
+        zoom: Camera zoom factor
+    """
+    if not rl_waypoints:
+        return
+    
+    try:
+        # Draw gap direction line if a gap is selected (RL mode only)
+        if rl_selected_gap:
+            gap_distance = rl_selected_gap.get('distance', 5.0)
+            gap_angle = rl_selected_gap.get('angle', 0.0)
+            
+            end_x = vehicle.x + gap_distance * math.cos(gap_angle)
+            end_y = vehicle.y + gap_distance * math.sin(gap_angle)
+            
+            vehicle_screen = world_to_screen(vehicle.x, vehicle.y, camera_x, camera_y, zoom)
+            gap_end_screen = world_to_screen(end_x, end_y, camera_x, camera_y, zoom)
+            
+            # Draw gap direction as cyan line
+            pygame.draw.line(surface, (0, 255, 255), vehicle_screen, gap_end_screen, 2)
+        
+        # Draw waypoints as yellow breadcrumb dots
+        for wp_x, wp_y in rl_waypoints:
+            wp_screen = world_to_screen(wp_x, wp_y, camera_x, camera_y, zoom)
+            pygame.draw.circle(surface, YELLOW, wp_screen, 4)
+            
+    except Exception:
+        pass
