@@ -2,6 +2,7 @@ import pygame
 import math
 import os
 import json
+import numpy as np
 import rclpy
 import threading
 from objects import CircleObstacle, CollisionDetector, PolygonObstacle, LineObstacle
@@ -10,11 +11,133 @@ from constants import *
 from sim_publisher import VehiclePublisher
 from sim_edit import SceneEditor
 from draw import *
+<<<<<<< HEAD
 from vehicle import Vehicle, calculate_angular_velocity
 from evaluator import RunEvaluator
 import numpy as np
 pygame.init()
 
+=======
+from nearest_costmap import Grid as CostGrid, NearestGenerator
+from euclidean_costmap import Grid as CostGrid, Euclidean, EuclideanCostMap
+pygame.init()
+
+def calculate_angular_velocity(speed, steering_angle, wheelbase):
+    if abs(steering_angle) > 1e-6:
+        turning_radius = wheelbase / math.tan(steering_angle)
+        return speed / turning_radius
+    else:
+        return 0
+
+class Vehicle:
+    def __init__(self, x=0, y=0):
+        # Vehicle parameters in meters
+        self.wheelbase = 0.4572  # L (18 inches)
+        self.track_width = 0.3048  # W (12 inches)
+        self.length = 0.9144 # 3 feet in meters
+        self.width = 0.6096  # 2 feet in meters
+
+        self.max_speed = 2.2352  # m/s (5 mph)
+        self.throttle_acceleration = 2.5  # m/s^2
+        self.max_acceleration = 2.5  # m/s^2
+        self.steering_rate = math.radians(180) # rad/s
+        self.max_steering_rate = math.radians(180) # rad/s
+
+        # TODO: steering system parameters
+        # parameters go here
+
+        # State variables
+        self.x = x
+        self.y = y
+        self.heading = 0.0  # radians
+        self.speed = 0.0  # m/s
+        # assuming bicycle model with 100% ackermann
+        self.steering_angle = 0.0  # radians
+
+        self.max_steering_angle = self.calculate_max_steering_angle()
+
+    def force_update(self, dt, speed, steering_angle):
+        """Updates vehicle state with given parameters from trajectory follower. 
+        If the given speed exceeds the max velocity, clamp down to max velocity
+        If the given steering angle exceeds max steering angle speed, clamp down as well
+        """
+        if abs(self.speed - speed) > self.max_acceleration * dt:
+            speed = self.speed + self.max_acceleration * dt if speed > self.speed else self.speed - self.max_acceleration * dt
+        if abs(speed) > self.max_speed:
+            speed = self.max_speed if speed > 0 else -self.max_speed
+        
+        if abs(self.steering_angle - steering_angle) > self.max_steering_rate * dt:
+            steering_angle = self.steering_angle + self.max_steering_rate * dt if steering_angle > self.steering_angle else self.steering_angle - self.max_steering_rate * dt
+        if abs(steering_angle) > self.max_steering_angle:
+            steering_angle = self.max_steering_angle if steering_angle > 0 else -self.max_steering_angle
+
+        self.speed = speed
+        self.steering_angle = steering_angle
+
+        angular_velocity = calculate_angular_velocity(self.speed, self.steering_angle, self.wheelbase)
+        self.heading += angular_velocity * dt
+        # Normalize heading to be within -pi to pi
+        self.heading = (self.heading + math.pi) % (2 * math.pi) - math.pi
+
+        self.x += self.speed * math.cos(self.heading) * dt
+        self.y += self.speed * math.sin(self.heading) * dt
+
+    def update(self, dt, speed_input, steer_input):
+        """Update vehicle state w/ bicycle model"""
+
+        # update speed based on throttle input
+        self.speed = max(-self.max_speed, min(self.max_speed, self.speed + speed_input * self.throttle_acceleration * dt))
+        if speed_input < 1e-6:
+            # natural deceleration
+            self.speed *= 0.25 ** dt
+
+        # update effective steering angle based on steering input
+        if steer_input != 0:
+            self.steering_angle = max(-self.max_steering_angle, min(self.max_steering_angle, self.steering_angle + steer_input * self.steering_rate * dt))
+        else:
+            self.steering_angle = self.steering_angle * 0.9 # natural return to center
+        # update position and heading
+        angular_velocity = calculate_angular_velocity(self.speed, self.steering_angle, self.wheelbase)
+
+        # Calculate heading
+        self.heading += angular_velocity * dt
+        # Normalize heading to be within -pi to pi
+        self.heading = (self.heading + math.pi) % (2 * math.pi) - math.pi
+
+        self.x += self.speed * math.cos(self.heading) * dt
+        self.y += self.speed * math.sin(self.heading) * dt
+
+    def get_corners(self):
+        """Returns the world coordinates of the four corners of the vehicle."""
+        half_length = self.length / 2
+        half_width = self.width / 2
+
+        # Corners in local vehicle frame (front-left, front-right, back-right, back-left)
+        local_corners = [
+            (half_length, half_width),
+            (half_length, -half_width),
+            (-half_length, -half_width),
+            (-half_length, half_width)
+        ]
+
+        # Rotate and translate corners to world frame
+        world_corners = []
+        for x_local, y_local in local_corners:
+            x_world = self.x + x_local * math.cos(self.heading) - y_local * math.sin(self.heading)
+            y_world = self.y + x_local * math.sin(self.heading) + y_local * math.cos(self.heading)
+            world_corners.append((x_world, y_world))
+
+        return world_corners
+    def calculate_max_steering_angle(self):
+        """
+        Calculate maximum steering angle from rack & pinion geometry.
+        This is the maximum angle a wheel can turn, NOT the maximum effective steering angle
+        (though the two should be close)
+        """
+        # arccot of average of cot of outer wheels 
+        return math.radians(27.2) # 34.919 deg, 23.0319 deg
+
+>>>>>>> refs/remotes/origin/lane-planner
 class Simulator:
     def __init__(self, scene_arg: str = None):
         import time
@@ -40,8 +163,9 @@ class Simulator:
         self.available_maps = self.scan_maps_directory()
         self.current_map = None
         self.dropdown_open = False
-        self.dropdown_rect = pygame.Rect(SCREEN_WIDTH - 220, 10, 150, 30)
         self.edit_button_rect = pygame.Rect(SCREEN_WIDTH - 60, 10, 50, 30)
+        self.distance_button_rect = pygame.Rect(self.edit_button_rect.x - 10 - 70, 10, 70, 30)
+        self.dropdown_rect = pygame.Rect(self.distance_button_rect.x - 10 - 120, 10, 120, 30)
         
         # Editor state
         self.edit_mode = False
@@ -65,15 +189,45 @@ class Simulator:
         self._traj_cost_rows = []
         self._traj_cost_timestep = None
         self._last_traj_stamp = None
+        self._costmap_width = 30.0
+        self._costmap_height = 30.0
+        self._costmap_resolution = 0.1
+        self._costmap_origin = (-self._costmap_width / 2.0, -self._costmap_height / 2.0)
+        self._costmap_search_radius = 3.5
+        self._costmap_kernel_sigma = 1
+        self._costmap_generator = None
+        self._costmap = None
+        self._costmap_shape = (0, 0)
+        self._last_ros_costmap_seq = -1
         self._target_debug_velocity = self.vehicle.max_speed * (2.0 / 3.0)
+        self._costmap_interp_resolution = 0.1
         self._cost_weights = {
-            "cte": 0.05,
-            "theta_e": 0.01,
-            "speed": 0.1,
-            "costmap": 100.0,
+            # Defaults mirror LaneFollowingMPC::costs
+            "along_track": 200.0,
+            "cte": 50.0,
+            "costmap": 50.0,
+            "obs_threshold": 5.0,
+            "cte_threshold": 1.5,
+            "along_threshold": 0.0,
         }
         self._costmap_probe = None
         self._costmap_probe_lifetime = 4.0
+        self._distance_points = []
+        self._distance_value = None
+        self.distance_measure_enabled = False
+        self._refresh_costmap_generator()
+        self._show_planner_ghosts = False
+        # UI + ROS publish state for live cost tuning
+        self._cost_controls = []
+        self._cost_control_layout = {}
+        self._cost_panel_rect = None
+        self._active_slider_key = None
+        self._slider_dragging = False
+        self._active_input_key = None
+        self._input_buffer = ""
+        self._input_caret = 0
+        self._last_published_cost_weights = None
+        self._init_cost_tuning_ui()
 
         # Load initial map
         if scene_arg and os.path.exists(scene_arg):
@@ -281,6 +435,7 @@ class Simulator:
                     return True
         return False
 
+<<<<<<< HEAD
     def _generate_occupancy_grid(self, center_x=None, center_y=None, width_m=30.0, height_m=30.0, resolution=0.2):
         """
         Generate local occupancy grid around vehicle position.
@@ -355,21 +510,127 @@ class Simulator:
             distances.append(ray_distance)
         
         return distances
+=======
+    def _refresh_costmap_generator(self):
+        self._costmap_generator = Euclidean()
+
+    def _refresh_costmap_from_ros(self, force=False):
+        publisher = getattr(self, 'pose_publisher', None)
+        if publisher is None:
+            return False
+        try:
+            seq = publisher.costmap_seq() if hasattr(publisher, 'costmap_seq') else getattr(publisher, '_costmap_seq', 0)
+        except Exception:
+            seq = 0
+        if not force and seq == self._last_ros_costmap_seq:
+            return False
+
+        meta = getattr(publisher, 'latest_costmap_meta', None)
+        data_msg = getattr(publisher, 'latest_costmap_data', None)
+        if meta is None or data_msg is None:
+            return False
+
+        width = int(getattr(meta, 'width', 0))
+        height = int(getattr(meta, 'height', 0))
+        if width <= 0 or height <= 0:
+            return False
+
+        data = getattr(data_msg, 'data', None)
+        if data is None or len(data) < width * height:
+            return False
+
+        # ROS data is row-major (x fastest). Transpose so grid.data[x, y] aligns with C++.
+        flat = np.array(list(data)[: width * height], dtype=np.float32)
+        grid_data = flat.reshape((height, width)).T
+        origin = (float(meta.origin.position.x), float(meta.origin.position.y))
+        resolution = float(getattr(meta, 'resolution', 0.0)) or 0.1
+
+        grid = CostGrid(data=grid_data, origin=origin, resolution=resolution)
+        self._costmap = EuclideanCostMap(grid)
+        self._costmap_origin = grid.origin
+        self._costmap_shape = grid.data.shape
+        self._costmap_resolution = grid.resolution
+        self._last_ros_costmap_seq = seq
+        return True
+
+    def _rebuild_costmap_from_obstacles(self):
+        if not self.show_traj_cost_debug:
+            return
+        if self._refresh_costmap_from_ros(force=True):
+            return
+        self._costmap = None
+
+    def _generate_costmap_grid(self):
+        nx = int(max(1, math.ceil(self._costmap_width / self._costmap_resolution)))
+        ny = int(max(1, math.ceil(self._costmap_height / self._costmap_resolution)))
+        origin_x = -self._costmap_width / 2.0
+        origin_y = -self._costmap_height / 2.0
+        data = np.zeros((nx, ny), dtype=np.float32)
+        for ix in range(nx):
+            cx = origin_x + (ix + 0.5) * self._costmap_resolution
+            for iy in range(ny):
+                cy = origin_y + (iy + 0.5) * self._costmap_resolution
+                occupied = self._point_inside_obstacles(cx, cy)
+                data[ix, iy] = 1.0 if occupied else 0.0
+        cost_grid = CostGrid(data=data, origin=(origin_x, origin_y), resolution=self._costmap_resolution)
+        self._costmap_origin = cost_grid.origin
+        self._costmap_shape = cost_grid.data.shape
+        return cost_grid
+>>>>>>> refs/remotes/origin/lane-planner
 
     def _lookup_costmap_cost(self, x, y):
-        """Query the planner node for a costmap value."""
         if not self.show_traj_cost_debug:
             return (None, 'debug_disabled')
-        publisher = getattr(self, 'pose_publisher', None)
-        if publisher is None or not hasattr(publisher, 'query_costmap'):
-            return (None, 'no_client')
-        try:
-            cost_val, error = publisher.query_costmap(x, y)
-        except Exception:
-            return (None, 'query_failed')
-        if error:
-            return (None, error)
-        return (cost_val, None)
+        if not self._costmap:
+            return (None, 'no_data')
+        grid = self._costmap.grid
+        ix = int((x - grid.origin[0]) / grid.resolution)
+        iy = int((y - grid.origin[1]) / grid.resolution)
+        rows, cols = grid.data.shape
+        if ix < 0 or iy < 0 or ix >= rows or iy >= cols:
+            return (None, 'out_of_bounds')
+        return (float( grid.data[ix, iy]), None)
+        # return (float(0 if grid.data[ix, iy] > 5 else 100), None)
+
+    def _interpolated_costmap_penalty(self, start, end=None, resolution=None):
+        """Mirror LaneFollowingMPC::interpolated_costmap_penalty for debug costs."""
+        if not self.show_traj_cost_debug or not self._costmap:
+            return None
+        resolution = resolution or self._costmap_interp_resolution
+        if resolution <= 0.0:
+            resolution = 0.1
+
+        start_x, start_y = start
+        if end is None:
+            end_x, end_y = start_x, start_y
+        else:
+            end_x, end_y = end
+
+        dx = end_x - start_x
+        dy = end_y - start_y
+        length = math.hypot(dx, dy)
+        has_segment = end is not None and length > 1e-6
+        steps = max(1, int(math.ceil(length / resolution))) if has_segment else 0
+
+        def sample(t):
+            px = start_x + t * dx
+            py = start_y + t * dy
+            cost_val, _ = self._lookup_costmap_cost(px, py)
+            if cost_val is None or math.isinf(cost_val):
+                return None
+            return cost_val * (1.0 + 0.48 * (1.0 - cost_val))
+
+        if steps == 0:
+            return sample(0.0)
+
+        penalty = 0.0
+        for step in range(steps + 1):
+            t = float(step) / float(steps)
+            val = sample(t)
+            if val is None:
+                return None
+            penalty += val
+        return penalty
 
     def _record_costmap_probe(self, x, y, cost_val, reason=None):
         """Store the last probed costmap point for on-screen display."""
@@ -380,6 +641,19 @@ class Simulator:
             'reason': reason,
             'timestamp': pygame.time.get_ticks() / 1000.0,
         }
+
+    def _record_distance_point(self, x, y):
+        if len(self._distance_points) >= 2:
+            self._distance_points = []
+            self._distance_value = None
+        self._distance_points.append((float(x), float(y)))
+        if len(self._distance_points) == 2:
+            (x1, y1), (x2, y2) = self._distance_points
+            self._distance_value = math.hypot(x2 - x1, y2 - y1)
+
+    def _clear_distance_measurement(self):
+        self._distance_points = []
+        self._distance_value = None
 
     def _get_active_costmap_probe(self):
         if not self._costmap_probe or not self.show_traj_cost_debug:
@@ -395,6 +669,55 @@ class Simulator:
     def _clear_costmap_probe(self):
         self._costmap_probe = None
 
+    def _init_cost_tuning_ui(self):
+        """Set up slider metadata for MPC lane cost tuning."""
+        self._cost_controls = [
+            {"label": "w_along", "key": "along_track", "min": 0.0, "max": 200.0, "step": 0.1, "default": self._cost_weights["along_track"]},
+            {"label": "w_cte", "key": "cte", "min": 0.0, "max": 100.0, "step": 0.1, "default": self._cost_weights["cte"]},
+            {"label": "w_costmap", "key": "costmap", "min": 0.0, "max": 100.0, "step": 0.1, "default": self._cost_weights["costmap"]},
+            {"label": "obs_thr", "key": "obs_threshold", "min": 0.1, "max": 20.0, "step": 0.1, "default": self._cost_weights["obs_threshold"]},
+            {"label": "cte_thr", "key": "cte_threshold", "min": 0.1, "max": 10.0, "step": 0.1, "default": self._cost_weights["cte_threshold"]},
+            {"label": "along_thr", "key": "along_threshold", "min": 0.0, "max": 10.0, "step": 0.1, "default": self._cost_weights["along_threshold"]},
+            {"label": "target_v", "key": "target_v", "min": 0.0, "max": self.vehicle.max_speed, "step": 0.05, "default": self._target_debug_velocity},
+        ]
+        for ctrl in self._cost_controls:
+            ctrl["value"] = ctrl.get("default", 0.0)
+        self._last_published_cost_weights = None
+        self._maybe_publish_cost_weights(force=True)
+
+    def _set_cost_control_value(self, key, value, clamp=True):
+        # Clamp and assign to control + local dict
+        clamped = value
+        for ctrl in self._cost_controls:
+            if ctrl["key"] == key:
+                v_min, v_max = ctrl["min"], ctrl["max"]
+                clamped = max(v_min, min(v_max, value)) if clamp else value
+                ctrl["value"] = clamped
+                break
+        if key in self._cost_weights:
+            self._cost_weights[key] = clamped
+        elif key == "target_v":
+            self._target_debug_velocity = clamped
+        self._maybe_publish_cost_weights()
+
+    def _maybe_publish_cost_weights(self, force=False):
+        payload = (
+            round(float(self._cost_weights.get("along_track", 0.0)), 4),
+            round(float(self._cost_weights.get("cte", 0.0)), 4),
+            round(float(self._cost_weights.get("costmap", 0.0)), 4),
+            round(float(self._cost_weights.get("obs_threshold", 0.0)), 4),
+            round(float(self._cost_weights.get("cte_threshold", 0.0)), 4),
+            round(float(self._cost_weights.get("along_threshold", 0.0)), 4),
+            round(float(self._target_debug_velocity), 4),
+        )
+        if force or payload != self._last_published_cost_weights:
+            try:
+                if getattr(self, 'pose_publisher', None) is not None:
+                    self.pose_publisher.publish_lane_cost_weights(self._cost_weights, self._target_debug_velocity)
+            except Exception:
+                pass
+            self._last_published_cost_weights = payload
+
     @staticmethod
     def _normalize_angle(angle):
         return (angle + math.pi) % (2 * math.pi) - math.pi
@@ -402,10 +725,12 @@ class Simulator:
     def _compute_lane_errors(self, x, y, heading):
         lane = getattr(self, 'lane_centerline', None)
         if not lane or len(lane) < 2:
-            return (None, None)
+            return (None, None, None)
         best_dist = None
         best_heading = None
         best_sign = 0.0
+        best_s = None
+        arc_len = 0.0
         for i in range(len(lane) - 1):
             ax, ay = lane[i]
             bx, by = lane[i + 1]
@@ -414,6 +739,7 @@ class Simulator:
             seg_len2 = segx * segx + segy * segy
             if seg_len2 <= 1e-9:
                 continue
+            seg_len = math.sqrt(seg_len2)
             t = max(0.0, min(1.0, ((x - ax) * segx + (y - ay) * segy) / seg_len2))
             projx = ax + t * segx
             projy = ay + t * segy
@@ -425,11 +751,13 @@ class Simulator:
                 best_heading = math.atan2(segy, segx)
                 cross = segx * (y - ay) - segy * (x - ax)
                 best_sign = 1.0 if cross >= 0.0 else -1.0
+                best_s = arc_len + t * seg_len
+            arc_len += seg_len
         if best_heading is None or best_dist is None:
-            return (None, None)
+            return (None, None, None)
         cte = best_sign * math.sqrt(max(best_dist, 0.0))
         theta_e = self._normalize_angle(heading - best_heading)
-        return (cte, theta_e)
+        return (cte, theta_e, best_s)
 
     def _update_trajectory_cost_rows(self, traj_msg):
         if not self.show_traj_cost_debug or traj_msg is None:
@@ -443,25 +771,33 @@ class Simulator:
             return
         self._last_traj_stamp = stamp_key
         rows = []
-        for idx, wp in enumerate(getattr(traj_msg, 'waypoints', [])):
+        timestep = getattr(traj_msg, 'timestep', None)
+        waypoints = list(getattr(traj_msg, 'waypoints', []))
+        num_waypoints = len(waypoints)
+        for idx, wp in enumerate(waypoints):
             x = float(getattr(wp, 'x', 0.0))
             y = float(getattr(wp, 'y', 0.0))
             theta = float(getattr(wp, 'theta', 0.0))
             v = float(getattr(wp, 'v', 0.0))
             tau = float(getattr(wp, 'tau', 0.0))
-            cte, theta_e = self._compute_lane_errors(x, y, theta)
-            cost_val, _ = self._lookup_costmap_cost(x, y)
-            cost_terms = {}
-            total = 0.0
-            if cte is not None:
-                cost_terms['cte'] = self._cost_weights['cte'] * abs(cte)
-            if theta_e is not None:
-                cost_terms['theta_e'] = self._cost_weights['theta_e'] * abs(theta_e)
-            if v is not None:
-                cost_terms['speed'] = self._cost_weights['speed'] * abs(v - self._target_debug_velocity)
-            if cost_val is not None:
-                cost_terms['costmap'] = self._cost_weights['costmap'] * cost_val
-            total_cost = sum(cost_terms.values()) if cost_terms else None
+            cte = float(getattr(wp, 'cte', float('nan')))
+            if math.isnan(cte):
+                cte = None
+            along_track = float(getattr(wp, 'along_track', float('nan')))
+            if math.isnan(along_track):
+                along_track = None
+            costmap_cost = float(getattr(wp, 'costmap_cost', float('nan')))
+            if math.isnan(costmap_cost):
+                costmap_cost = None
+            cte_bad = float(getattr(wp, 'cte_bad', float('nan')))
+            if math.isnan(cte_bad):
+                cte_bad = None
+            obs_bad = float(getattr(wp, 'obs_bad', float('nan')))
+            if math.isnan(obs_bad):
+                obs_bad = None
+            along_track_penalty = float(getattr(wp, 'along_track_penalty', float('nan')))
+            if math.isnan(along_track_penalty):
+                along_track_penalty = None
             rows.append({
                 'idx': idx,
                 'x': x,
@@ -470,12 +806,14 @@ class Simulator:
                 'v': v,
                 'tau': tau,
                 'cte': cte,
-                'theta_e': theta_e,
-                'costmap': cost_val,
-                'total': total_cost
+                'along_track': along_track,
+                'costmap_cost': costmap_cost,
+                'cte_bad': cte_bad,
+                'obs_bad': obs_bad,
+                'along_track_penalty': along_track_penalty
             })
         self._traj_cost_rows = rows
-        self._traj_cost_timestep = getattr(traj_msg, 'timestep', None)
+        self._traj_cost_timestep = timestep
 
     def _format_debug_value(self, value, width=6, precision=2):
         if value is None or (isinstance(value, float) and math.isnan(value)):
@@ -491,10 +829,12 @@ class Simulator:
             return
         lines = ["Local trajectory cost debug"]
         weight_line = (
-            f"w_cte={self._cost_weights['cte']:.2f} "
-            f"w_heading={self._cost_weights['theta_e']:.2f} "
-            f"w_speed={self._cost_weights['speed']:.2f} "
-            f"w_costmap={self._cost_weights['costmap']:.0f}"
+            f"w_along={self._cost_weights['along_track']:.1f} "
+            f"w_cte={self._cost_weights['cte']:.1f} "
+            f"w_costmap={self._cost_weights['costmap']:.1f} "
+            f"obs_thr={self._cost_weights['obs_threshold']:.2f} "
+            f"cte_thr={self._cost_weights['cte_threshold']:.2f} "
+            f"along_thr={self._cost_weights['along_threshold']:.2f}"
         )
         lines.append(weight_line)
         if self._traj_cost_timestep:
@@ -506,22 +846,19 @@ class Simulator:
             for row in self._traj_cost_rows[:max_rows]:
                 line = (
                     f"{row['idx']:02d} "
-                    f"x:{self._format_debug_value(row['x'])} "
-                    f"y:{self._format_debug_value(row['y'])} "
-                    f"th:{self._format_debug_value(row['theta'])} "
-                    f"v:{self._format_debug_value(row['v'])} "
-                    f"tau:{self._format_debug_value(row['tau'])} "
                     f"cte:{self._format_debug_value(row['cte'])} "
-                    f"th_e:{self._format_debug_value(row['theta_e'])} "
-                    f"cm:{self._format_debug_value(row['costmap'], precision=3)} "
-                    f"sum:{self._format_debug_value(row['total'], precision=1)}"
+                    f"along:{self._format_debug_value(row['along_track'])} "
+                    f"cost:{self._format_debug_value(row['costmap_cost'], precision=2)} "
+                    f"cte_b:{self._format_debug_value(row['cte_bad'], precision=2)} "
+                    f"obs_b:{self._format_debug_value(row['obs_bad'], precision=2)} "
+                    f"along_p:{self._format_debug_value(row['along_track_penalty'], precision=2)}"
                 )
                 lines.append(line)
             if len(self._traj_cost_rows) > max_rows:
                 lines.append(f"... ({len(self._traj_cost_rows) - max_rows} more)")
         else:
             lines.append("No trajectory samples available")
-        if probe:
+        if probe and not self.distance_measure_enabled:
             if probe['cost'] is None:
                 val_text = "n/a"
             else:
@@ -530,8 +867,8 @@ class Simulator:
             note = ""
             if reason == 'out_of_bounds':
                 note = " (outside costmap bounds)"
-            elif reason == 'no_client':
-                note = " (no costmap client)"
+            elif reason == 'no_data':
+                note = " (costmap unavailable)"
             elif reason and reason not in ('debug_disabled',):
                 note = f" ({reason})"
             lines.append(f"probe x={probe['x']:.2f} y={probe['y']:.2f} cost={val_text}{note}")
@@ -547,7 +884,7 @@ class Simulator:
         self.screen.blit(overlay, (10, SCREEN_HEIGHT - box_height - 10))
 
     def _draw_costmap_probe_marker(self):
-        if not self.show_traj_cost_debug:
+        if not self.show_traj_cost_debug or self.distance_measure_enabled:
             return
         probe = self._get_active_costmap_probe()
         if not probe:
@@ -569,6 +906,223 @@ class Simulator:
         overlay.fill((0, 0, 0, 180))
         overlay.blit(text_surface, (padding, padding))
         self.screen.blit(overlay, bg_rect.topleft)
+
+    def _draw_distance_measurement(self):
+        if not self._distance_points:
+            return
+        try:
+            for px, py in self._distance_points:
+                sx, sy = world_to_screen(px, py, self.camera_x, self.camera_y)
+                pygame.draw.circle(self.screen, YELLOW, (sx, sy), 6, 2)
+                pygame.draw.circle(self.screen, YELLOW, (sx, sy), 2)
+            if len(self._distance_points) == 2:
+                (x1, y1), (x2, y2) = self._distance_points
+                sx1, sy1 = world_to_screen(x1, y1, self.camera_x, self.camera_y)
+                sx2, sy2 = world_to_screen(x2, y2, self.camera_x, self.camera_y)
+                pygame.draw.line(self.screen, YELLOW, (sx1, sy1), (sx2, sy2), 2)
+                if self._distance_value is not None:
+                    label = f"{self._distance_value:.2f} m"
+                    mx = int((sx1 + sx2) / 2)
+                    my = int((sy1 + sy2) / 2) - 10
+                    text_surface = self.font.render(label, True, WHITE)
+                    padding = 4
+                    rect = text_surface.get_rect(center=(mx, my))
+                    bg_rect = rect.inflate(padding * 2, padding * 2)
+                    overlay = pygame.Surface(bg_rect.size, pygame.SRCALPHA)
+                    overlay.fill((0, 0, 0, 180))
+                    overlay.blit(text_surface, (padding, padding))
+                    self.screen.blit(overlay, bg_rect.topleft)
+        except Exception:
+            return
+
+    def _draw_cost_tuning_panel(self):
+        """Render lightweight sliders/text inputs for MPC lane cost tuning."""
+        if not self.show_traj_cost_debug:
+            self._cost_control_layout = {}
+            self._cost_panel_rect = None
+            return
+
+        padding = 10
+        row_h = 34
+        panel_width = 320
+        header_h = 26
+        total_h = header_h + len(self._cost_controls) * row_h + padding * 2
+        x = SCREEN_WIDTH - panel_width - 10
+        y = 60
+        panel_rect = pygame.Rect(x, y, panel_width, total_h)
+        self._cost_panel_rect = panel_rect
+        surface = pygame.Surface((panel_rect.width, panel_rect.height), pygame.SRCALPHA)
+        surface.fill((0, 0, 0, 150))
+
+        header_txt = self.font.render("Lane cost tuning (live)", True, WHITE)
+        surface.blit(header_txt, (padding, padding))
+        self._cost_control_layout = {}
+
+        for idx, ctrl in enumerate(self._cost_controls):
+            cy = padding + header_h + idx * row_h
+            label_txt = self.font.render(ctrl["label"], True, WHITE)
+            surface.blit(label_txt, (padding, cy))
+
+            # Slider
+            slider_x = padding + 90
+            slider_w = 130
+            slider_rect = pygame.Rect(slider_x, cy + 6, slider_w, 10)
+            pygame.draw.rect(surface, DARK_GRAY, slider_rect)
+            pygame.draw.rect(surface, LIGHT_GRAY, slider_rect, width=1)
+            t = 0.0
+            v_min, v_max = ctrl["min"], ctrl["max"]
+            if v_max > v_min:
+                t = (ctrl["value"] - v_min) / (v_max - v_min)
+                t = max(0.0, min(1.0, t))
+            handle_x = slider_rect.x + int(t * slider_rect.w)
+            pygame.draw.rect(surface, BLUE, (handle_x - 4, slider_rect.y - 3, 8, slider_rect.h + 6))
+
+            # Text box
+            box_w = 70
+            input_rect = pygame.Rect(slider_rect.right + 8, cy, box_w, 24)
+            active = self._active_input_key == ctrl["key"]
+            border_color = BLUE if active else WHITE
+            fill_color = (60, 60, 60) if active else (20, 20, 20)
+            pygame.draw.rect(surface, fill_color, input_rect)
+            pygame.draw.rect(surface, border_color, input_rect, width=1)
+
+            # Prefer live buffer when editing; otherwise show clamped value text
+            val_text = f"{ctrl['value']:.3f}" if ctrl["key"] not in ("along_track", "cte", "costmap", "obs_threshold", "cte_threshold", "along_threshold") else f"{ctrl['value']:.1f}"
+            if ctrl["key"] == "target_v":
+                val_text = f"{ctrl['value']:.2f}"
+            if active:
+                val_text = self._input_buffer or val_text
+            # Build display string with caret
+            display_text = val_text
+            caret_pos = len(display_text) if not active else self._input_caret
+            # Clamp caret
+            caret_pos = max(0, min(len(display_text), caret_pos))
+            left = display_text[:caret_pos]
+            right = display_text[caret_pos:]
+            render_text = left + "|" + right if active else display_text
+
+            # Trim to fit box by removing from start if needed
+            max_w = input_rect.w - 6
+            trimmed = render_text
+            while trimmed and self.font.size(trimmed)[0] > max_w:
+                # remove first char unless it's caret, keep caret visible by trimming left side
+                if trimmed[0] == "|":
+                    trimmed = trimmed[1:]
+                    caret_pos -= 1
+                else:
+                    trimmed = trimmed[1:]
+            input_txt = self.font.render(trimmed, True, WHITE)
+            surface.blit(input_txt, (input_rect.x + 3, input_rect.y + 3))
+
+            self._cost_control_layout[ctrl["key"]] = {
+                "slider": pygame.Rect(panel_rect.x + slider_rect.x, panel_rect.y + slider_rect.y, slider_rect.w, slider_rect.h),
+                "input": pygame.Rect(panel_rect.x + input_rect.x, panel_rect.y + input_rect.y, input_rect.w, input_rect.h),
+            }
+
+        self.screen.blit(surface, (panel_rect.x, panel_rect.y))
+
+    def _handle_cost_tuning_mouse(self, event):
+        """Return True if event consumed by tuning UI."""
+        if not self.show_traj_cost_debug:
+            return False
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if self._cost_panel_rect and not self._cost_panel_rect.collidepoint(event.pos):
+                # Click outside closes input focus
+                self._active_input_key = None
+                self._input_caret = 0
+                return False
+            for key, layout in self._cost_control_layout.items():
+                if layout["input"].collidepoint(event.pos):
+                    self._active_input_key = key
+                    # Prefill buffer with current value
+                    cur = next((c["value"] for c in self._cost_controls if c["key"] == key), 0.0)
+                    self._input_buffer = f"{cur:.3f}"
+                    if key == "target_v":
+                        self._input_buffer = f"{cur:.2f}"
+                    if key in ("along_track", "cte", "costmap", "obs_threshold", "cte_threshold", "along_threshold"):
+                        self._input_buffer = f"{cur:.1f}"
+                    self._input_caret = len(self._input_buffer)
+                    self._slider_dragging = False
+                    return True
+                if layout["slider"].collidepoint(event.pos):
+                    self._active_slider_key = key
+                    self._slider_dragging = True
+                    self._update_slider_value_from_pos(event.pos)
+                    return True
+        elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            if self._slider_dragging:
+                self._slider_dragging = False
+                self._active_slider_key = None
+                return True
+        elif event.type == pygame.MOUSEMOTION:
+            if self._slider_dragging and self._active_slider_key:
+                self._update_slider_value_from_pos(event.pos)
+                return True
+        return False
+
+    def _update_slider_value_from_pos(self, pos):
+        if self._active_slider_key is None:
+            return
+        layout = self._cost_control_layout.get(self._active_slider_key)
+        if not layout:
+            return
+        slider_rect = layout["slider"]
+        t = (pos[0] - slider_rect.x) / float(slider_rect.w)
+        t = max(0.0, min(1.0, t))
+        ctrl = next((c for c in self._cost_controls if c["key"] == self._active_slider_key), None)
+        if ctrl:
+            value = ctrl["min"] + t * (ctrl["max"] - ctrl["min"])
+            self._set_cost_control_value(ctrl["key"], value)
+
+    def _handle_cost_tuning_key(self, event):
+        if not self.show_traj_cost_debug or not self._active_input_key:
+            return False
+        if event.key == pygame.K_RETURN:
+            try:
+                val = float(self._input_buffer) if self._input_buffer not in ("", "-", "+") else 0.0
+                # Accept out-of-range for manual entry
+                self._set_cost_control_value(self._active_input_key, val, clamp=False)
+            except Exception:
+                pass
+            self._active_input_key = None
+            self._input_buffer = ""
+            self._input_caret = 0
+            return True
+        if event.key == pygame.K_ESCAPE:
+            self._active_input_key = None
+            self._input_buffer = ""
+            self._input_caret = 0
+            return True
+        if event.key == pygame.K_BACKSPACE:
+            if self._input_caret > 0 and self._input_buffer:
+                self._input_buffer = self._input_buffer[:self._input_caret-1] + self._input_buffer[self._input_caret:]
+                self._input_caret -= 1
+            return True
+        if event.key == pygame.K_LEFT:
+            self._input_caret = max(0, self._input_caret - 1)
+            return True
+        if event.key == pygame.K_RIGHT:
+            self._input_caret = min(len(self._input_buffer), self._input_caret + 1)
+            return True
+        if event.key == pygame.K_HOME:
+            self._input_caret = 0
+            return True
+        if event.key == pygame.K_END:
+            self._input_caret = len(self._input_buffer)
+            return True
+        if event.key == pygame.K_a and (event.mod & pygame.KMOD_CTRL):
+            # select-all: clear buffer so next input replaces it
+            self._input_buffer = ""
+            self._input_caret = 0
+            return True
+        # Accept basic numeric entry
+        if event.unicode and (event.unicode.isdigit() or event.unicode in ['.', '-', '+', 'e', 'E']):
+            self._input_buffer = (
+                self._input_buffer[:self._input_caret] + event.unicode + self._input_buffer[self._input_caret:]
+            )
+            self._input_caret += 1
+            return True
+        return False
 
     # Drawing is centralized in draw.py. Simulator keeps state and updates only.
         
@@ -594,6 +1148,13 @@ class Simulator:
                 
         if self.edit_button_rect.collidepoint(pos):
             self.toggle_editor()
+            return True
+
+        if getattr(self, 'distance_button_rect', None) and self.distance_button_rect.collidepoint(pos):
+            self.distance_measure_enabled = not self.distance_measure_enabled
+            self._clear_distance_measurement()
+            self._clear_costmap_probe()
+            self.dropdown_open = False
             return True
             
         return False
@@ -736,6 +1297,8 @@ class Simulator:
                 self.pose_publisher.publish_lane_centerline(self.lane_centerline)
             except Exception:
                 pass
+            if self.show_traj_cost_debug:
+                self._rebuild_costmap_from_obstacles()
             
         except Exception as e:
             print(f"Failed to load map {map_path}: {e}")
@@ -767,6 +1330,8 @@ class Simulator:
             self.pose_publisher.publish_lane_centerline(self.lane_centerline)
         except Exception:
             pass
+        if self.show_traj_cost_debug:
+            self._rebuild_costmap_from_obstacles()
 
     def _compute_grid_background(self):
         """Background thread function for computing occupancy grid without blocking main loop"""
@@ -921,6 +1486,8 @@ class Simulator:
                 pass
             # Clean up
             self.editor = None
+            if self.show_traj_cost_debug:
+                self._rebuild_costmap_from_obstacles()
             # Update map list
             self.available_maps = self.scan_maps_directory()
 
@@ -965,8 +1532,17 @@ class Simulator:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
-                    
-                elif event.type == pygame.MOUSEBUTTONDOWN:
+                    continue
+
+                # Cost-tuning UI consumes relevant events when debug overlay is visible
+                if event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP, pygame.MOUSEMOTION):
+                    if self._handle_cost_tuning_mouse(event):
+                        continue
+                if event.type == pygame.KEYDOWN:
+                    if self._handle_cost_tuning_key(event):
+                        continue
+
+                if event.type == pygame.MOUSEBUTTONDOWN:
                     if event.button == 1:  # Left click
                         pos = event.pos
 
@@ -1232,6 +1808,10 @@ class Simulator:
                         # Not in edit mode (or edit mode didn't consume click) - check map selector and edit button
                         if self.handle_map_selector_click(pos):
                             continue
+                        if self.distance_measure_enabled:
+                            wx, wy = screen_to_world(pos[0], pos[1], self.camera_x, self.camera_y)
+                            self._record_distance_point(wx, wy)
+                            continue
                         if self.show_traj_cost_debug:
                             wx, wy = screen_to_world(pos[0], pos[1], self.camera_x, self.camera_y)
                             cost_val, reason = self._lookup_costmap_cost(wx, wy)
@@ -1260,7 +1840,10 @@ class Simulator:
                                 self.editor.obstacles.append(PolygonObstacle(self.editor.temp_polygon))
                             self.editor.temp_polygon = []
                             self.editor.line_start = None
-                            
+                        else:
+                            if self.distance_measure_enabled:
+                                self._clear_distance_measurement()
+                    
                 elif event.type == pygame.MOUSEBUTTONUP:
                     if self.edit_mode:
                         # Finish any move operations
@@ -1328,7 +1911,7 @@ class Simulator:
                                 if isinstance(obs, CircleObstacle):
                                     obs.x = wx
                                     obs.y = wy
-                                
+                
                 elif event.type == pygame.KEYDOWN:
                     if self.editor and self.editor.save_text_active:
                         if event.key == pygame.K_RETURN:
@@ -1395,14 +1978,20 @@ class Simulator:
                             pass
                     elif event.key == pygame.K_t and not self.edit_mode:
                         self.show_traj_cost_debug = not self.show_traj_cost_debug
+                        self._active_input_key = None
+                        self._slider_dragging = False
+                        self._active_slider_key = None
                         self._clear_costmap_probe()
-                        if not self.show_traj_cost_debug:
+                        if self.show_traj_cost_debug:
+                            self._rebuild_costmap_from_obstacles()
+                        else:
                             self._traj_cost_rows = []
                         try:
                             state = 'enabled' if self.show_traj_cost_debug else 'disabled'
                             self.pose_publisher.get_logger().info(f'Local trajectory cost debug overlay {state}')
                         except Exception:
                             pass
+<<<<<<< HEAD
                     elif event.key == pygame.K_v and not self.edit_mode:
                         self.perception_mode = not self.perception_mode
                         if not self.perception_mode:
@@ -1414,6 +2003,15 @@ class Simulator:
                         self.debug_mode = not self.debug_mode
                         self._debug_click_pos = None
                         print(f"[DEBUG] Heatmap mode {'ON (click to query cost)' if self.debug_mode else 'OFF'}")
+=======
+                    elif event.key == pygame.K_g and not self.edit_mode:
+                        self._show_planner_ghosts = not self._show_planner_ghosts
+                        try:
+                            state = 'enabled' if self._show_planner_ghosts else 'disabled'
+                            self.pose_publisher.get_logger().info(f'Planner ghost render {state}')
+                        except Exception:
+                            pass
+>>>>>>> refs/remotes/origin/lane-planner
                     elif event.key == pygame.K_ESCAPE and self.edit_mode:
                         # Cancel current tool operation
                         self.editor.temp_polygon = []
@@ -1434,6 +2032,8 @@ class Simulator:
                 rclpy.spin_once(self.pose_publisher, timeout_sec=0)
             except Exception:
                 pass
+            if self.show_traj_cost_debug:
+                self._refresh_costmap_from_ros()
 
             speed_input, steer_input = self.handle_input()
             try:
@@ -1442,7 +2042,9 @@ class Simulator:
                 traj_msg = None
 
             self._update_trajectory_cost_rows(traj_msg)
+            now_time = pygame.time.get_ticks() / 1000.0
 
+<<<<<<< HEAD
             # In auto-follow locked mode, force follow_planner True every frame.
             if getattr(self, '_auto_follow_locked', False):
                 self.follow_planner = True
@@ -1451,6 +2053,11 @@ class Simulator:
             target_speed = 0.0
             desired_steer = 0.0
 
+=======
+            target_speed = self.vehicle.speed
+            desired_steer = self.vehicle.steering_angle
+            latest_ack = None
+>>>>>>> refs/remotes/origin/lane-planner
             if self.follow_planner:
                 # When follow_planner is enabled, the simulator accepts external
                 # AckermannDrive commands from an external follower. If such a
@@ -1464,6 +2071,10 @@ class Simulator:
                     else:
                         target_speed = getattr(latest_ack, 'speed', 0.0)
                         desired_steer = getattr(latest_ack, 'steering_angle', 0.0)
+<<<<<<< HEAD
+=======
+                # else: no external command -> keep keyboard inputs (manual driving)
+>>>>>>> refs/remotes/origin/lane-planner
 
             # if using traj follower, force input, else do normal input
             if self.follow_planner and latest_ack is not None:
@@ -1548,8 +2159,7 @@ class Simulator:
                 print(f"Error in grid update logic: {e}")
 
             # Periodically publish the simulated pose
-            now = pygame.time.get_ticks() / 1000.0
-            if now - self._last_publish_time >= self.publish_interval:
+            if now_time - self._last_publish_time >= self.publish_interval:
                 try:
                     self.pose_publisher.publish_pose(self.vehicle.x, self.vehicle.y, self.vehicle.heading, self.vehicle.speed, self.vehicle.steering_angle)
                     try:
@@ -1571,7 +2181,7 @@ class Simulator:
                     # Don't re-publish every cycle — it resets the planner mission.
                 except Exception as e:
                     print(f"Failed to publish pose: {e}")
-                self._last_publish_time = now
+                self._last_publish_time = now_time
 
             # Update fog-of-war perception state
             self._update_perception()
@@ -1619,7 +2229,11 @@ class Simulator:
                     draw_obstacles(self.screen, self.obstacles, self.camera_x, self.camera_y, zoom=self.camera_zoom)
                 draw_start_goal(self.screen, self.start_pose, self.target_pose, self.camera_x, self.camera_y, zoom=self.camera_zoom)
                 self._draw_costmap_probe_marker()
+<<<<<<< HEAD
                 
+=======
+                self._draw_distance_measurement()
+>>>>>>> refs/remotes/origin/lane-planner
                 # Draw waypoints in sim view as numbered green circles
                 try:
                     for i, (x, y) in enumerate(getattr(self, 'waypoints', []) or []):
@@ -1639,6 +2253,7 @@ class Simulator:
                 draw_lane_boundaries(self.screen, self)
                 draw_cumulative_lane_trail(self.screen, self)
                 draw_planner_trajectory(self.screen, self)
+<<<<<<< HEAD
                 draw_detected_lane_cl(self.screen, self)
                 draw_mpc_targets(self.screen, self)
                 self._draw_local_plan_cost_overlay()
@@ -1649,6 +2264,13 @@ class Simulator:
                         draw_debug_cost_label(self.screen, self.font,
                                               self._debug_click_pos[0], self._debug_click_pos[1], self)
                 
+=======
+                if self._show_planner_ghosts:
+                    draw_planner_ghosts(self.screen, self)
+                self._draw_local_plan_cost_overlay()
+
+            self._draw_cost_tuning_panel()
+>>>>>>> refs/remotes/origin/lane-planner
             draw_map_selector(self.screen, self)  # Always show map selector
 
             pygame.display.flip()
