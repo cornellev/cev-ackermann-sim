@@ -58,6 +58,84 @@ def draw_obstacles(surface, obstacles, camera_x, camera_y):
             obs.draw(surface, _w2s)
 
 
+def draw_costmap_lethal(surface, costmap, camera_x, camera_y):
+    """Show the lethal inflated cells used by A* as a high-contrast overlay."""
+    if costmap is None:
+        return
+    try:
+        metadata = costmap.metadata
+        resolution = float(metadata.resolution)
+        overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+        for row in range(metadata.size_y):
+            for column in range(metadata.size_x):
+                if costmap.data[row * metadata.size_x + column] < 253:
+                    continue
+                x = metadata.origin.position.x + column * resolution
+                y = metadata.origin.position.y + row * resolution
+                left, top = world_to_screen(x, y + resolution, camera_x, camera_y)
+                right, bottom = world_to_screen(x + resolution, y, camera_x, camera_y)
+                rect = (left, top, right - left, bottom - top)
+                pygame.draw.rect(overlay, (255, 0, 0, 210), rect)
+                pygame.draw.rect(overlay, (255, 255, 0, 255), rect, 1)
+        surface.blit(overlay, (0, 0))
+    except Exception:
+        pass
+
+
+def draw_costmap_window(surface, costmap, camera_x, camera_y):
+    """Draw the current costmap bounds so rolling-window motion is visible."""
+    if costmap is None:
+        return
+    try:
+        metadata = costmap.metadata
+        width = metadata.size_x * float(metadata.resolution)
+        height = metadata.size_y * float(metadata.resolution)
+        corners = [
+            world_to_screen(metadata.origin.position.x, metadata.origin.position.y, camera_x, camera_y),
+            world_to_screen(metadata.origin.position.x + width, metadata.origin.position.y, camera_x, camera_y),
+            world_to_screen(metadata.origin.position.x + width, metadata.origin.position.y + height, camera_x, camera_y),
+            world_to_screen(metadata.origin.position.x, metadata.origin.position.y + height, camera_x, camera_y),
+        ]
+        pygame.draw.lines(surface, (40, 220, 255), True, corners, 3)
+    except Exception:
+        pass
+
+
+def draw_rolling_obstacle_overlay(surface, obstacles, costmap, camera_x, camera_y, inflation_m):
+    """Draw simulator obstacles expanded by the adapter inflation inside the window."""
+    if costmap is None:
+        return
+    try:
+        metadata = costmap.metadata
+        min_x = metadata.origin.position.x
+        min_y = metadata.origin.position.y
+        max_x = min_x + metadata.size_x * metadata.resolution
+        max_y = min_y + metadata.size_y * metadata.resolution
+        overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+
+        for obstacle in obstacles or []:
+            if hasattr(obstacle, "radius"):
+                if obstacle.x + obstacle.radius + inflation_m < min_x or obstacle.x - obstacle.radius - inflation_m > max_x:
+                    continue
+                if obstacle.y + obstacle.radius + inflation_m < min_y or obstacle.y - obstacle.radius - inflation_m > max_y:
+                    continue
+                center = world_to_screen(obstacle.x, obstacle.y, camera_x, camera_y)
+                radius = max(1, int((obstacle.radius + inflation_m) * SCALE))
+                pygame.draw.circle(overlay, (255, 0, 0, 190), center, radius)
+                pygame.draw.circle(overlay, (255, 255, 0, 255), center, radius, 2)
+            elif hasattr(obstacle, "vertices"):
+                if not obstacle.vertices:
+                    continue
+                if not any(min_x - inflation_m <= x <= max_x + inflation_m and min_y - inflation_m <= y <= max_y + inflation_m for x, y in obstacle.vertices):
+                    continue
+                points = [world_to_screen(x, y, camera_x, camera_y) for x, y in obstacle.vertices]
+                pygame.draw.polygon(overlay, (255, 0, 0, 120), points)
+                pygame.draw.lines(overlay, (255, 255, 0, 255), True, points, 3)
+        surface.blit(overlay, (0, 0))
+    except Exception:
+        pass
+
+
 def draw_toolbox(surface, editor):
     """Draw the editor toolbox and controls."""
     # Clear and recreate toolbox rectangles

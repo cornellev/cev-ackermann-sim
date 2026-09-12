@@ -2,6 +2,7 @@ import pygame
 import math
 import os
 import json
+import argparse
 import rclpy
 from objects import CircleObstacle, CollisionDetector, PolygonObstacle, LineObstacle
 from sim_map_loader import load_map_file, load_obstacles_from_json
@@ -791,6 +792,20 @@ class Simulator:
                 draw_hud(self.screen, self.vehicle, self.font, self.follow_planner)
                 # Obstacles and start/goal
                 draw_obstacles(self.screen, self.obstacles, self.camera_x, self.camera_y)
+                draw_costmap_window(
+                    self.screen,
+                    self.pose_publisher.latest_costmap,
+                    self.camera_x,
+                    self.camera_y,
+                )
+                draw_rolling_obstacle_overlay(
+                    self.screen,
+                    self.obstacles,
+                    self.pose_publisher.latest_costmap,
+                    self.camera_x,
+                    self.camera_y,
+                    0.15,
+                )
                 draw_start_goal(self.screen, self.start_pose, self.target_pose, self.camera_x, self.camera_y)
                 # Draw waypoints in sim view as numbered green circles
                 try:
@@ -809,6 +824,14 @@ class Simulator:
                     pass
                 # Planner trajectory
                 draw_planner_trajectory(self.screen, self)
+                # Keep the costmap overlay on top of every scene element so it
+                # cannot be hidden by obstacles, the path, or the vehicle.
+                draw_costmap_lethal(
+                    self.screen,
+                    self.pose_publisher.latest_costmap,
+                    self.camera_x,
+                    self.camera_y,
+                )
                 
             draw_map_selector(self.screen, self)  # Always show map selector
 
@@ -818,5 +841,14 @@ class Simulator:
         rclpy.shutdown()
 
 if __name__ == "__main__":
-    simulator = Simulator()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("scene", nargs="?", default=None)
+    parser.add_argument("--start-x", type=float, default=None)
+    parser.add_argument("--start-y", type=float, default=None)
+    args = parser.parse_args()
+    simulator = Simulator(args.scene)
+    if args.start_x is not None or args.start_y is not None:
+        simulator.vehicle.x = args.start_x if args.start_x is not None else simulator.vehicle.x
+        simulator.vehicle.y = args.start_y if args.start_y is not None else simulator.vehicle.y
+        simulator.start_pose = (simulator.vehicle.x, simulator.vehicle.y, simulator.vehicle.heading)
     simulator.run()

@@ -4,6 +4,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
 from geometry_msgs.msg import PoseStamped, TransformStamped
 from nav_msgs.msg import OccupancyGrid, MapMetaData, Odometry
+from nav2_msgs.msg import Costmap
 from std_msgs.msg import Header
 from cev_msgs.msg import Waypoint, Trajectory
 from tf2_ros import StaticTransformBroadcaster
@@ -32,6 +33,7 @@ class VehiclePublisher(Node):
         super().__init__('sim_publisher', start_parameter_services=False)
         self._initialized = True
         self.pose_publisher_ = self.create_publisher(PoseStamped, 'sim_pose', 10)
+        self.goal_pose_publisher_ = self.create_publisher(PoseStamped, 'goal_pose', 10)
         self.state_publisher_ = self.create_publisher(Waypoint, 'sim_state', 10)
         occ_qos = QoSProfile(depth=1)
         occ_qos.durability = QoSDurabilityPolicy.TRANSIENT_LOCAL
@@ -39,6 +41,15 @@ class VehiclePublisher(Node):
         # publish occupancy grid for simulator viewers and for planner
         self.occ_publisher_ = self.create_publisher(OccupancyGrid, 'sim_occupancy', occ_qos)
         self.map_publisher_ = self.create_publisher(OccupancyGrid, 'map', occ_qos)
+        self.latest_costmap = None
+        self.costmap_update_count = 0
+        self.last_costmap_report = 0.0
+        costmap_qos = QoSProfile(depth=1)
+        costmap_qos.durability = QoSDurabilityPolicy.TRANSIENT_LOCAL
+        costmap_qos.reliability = QoSReliabilityPolicy.RELIABLE
+        self.costmap_subscription = self.create_subscription(
+            Costmap, '/costmap_raw', self._costmap_callback, costmap_qos
+        )
 
         # odometry publisher that the planner listens to
         self.odom_publisher_ = self.create_publisher(Odometry, '/odometry/filtered', 10)
@@ -65,6 +76,8 @@ class VehiclePublisher(Node):
 
         # Subscription to planner trajectories so the simulator can follow them
         self.latest_trajectory_msg = None
+        self.latest_goal = None
+        self.goal_timer = self.create_timer(0.2, self._republish_goal)
         try:
             self.trajectory_sub = self.create_subscription(Trajectory, 'trajectory', self._trajectory_callback, 10)
         except Exception:
@@ -228,6 +241,23 @@ class VehiclePublisher(Node):
         self.latest_trajectory_msg = msg
         self.get_logger().info('Received trajectory from planner')
 
+    def _costmap_callback(self, msg: Costmap):
+        self.latest_costmap = msg
+        self.costmap_update_count += 1
+        now = time.time()
+        if now - self.last_costmap_report >= 1.0:
+            lethal_cells = sum(value >= 253 for value in msg.data)
+            self.get_logger().info(
+                f"Received costmap for overlay: {msg.metadata.size_x}x{msg.metadata.size_y}, "
+                f"origin=({msg.metadata.origin.position.x:.2f}, "
+                f"{msg.metadata.origin.position.y:.2f}), lethal_cells={lethal_cells}"
+            )
+            self.last_costmap_report = now
+
+    def _republish_goal(self):
+        if self.latest_goal is not None:
+            self.goal_pose_publisher_.publish(self.latest_goal)
+
     def _ack_callback(self, msg):
         # Store last ackermann drive message from external follower
         self.latest_ack_msg = msg
@@ -259,6 +289,18 @@ class VehiclePublisher(Node):
             w.tau = float(tau)
             w.theta = float(theta)
             self.target_publisher_.publish(w)
+            goal = PoseStamped()
+            goal.header.stamp = self.get_clock().now().to_msg()
+            goal.header.frame_id = 'map'
+            goal.pose.position.x = float(x)
+            goal.pose.position.y = float(y)
+            qx, qy, qz, qw = yaw_to_quaternion(float(theta))
+            goal.pose.orientation.x = qx
+            goal.pose.orientation.y = qy
+            goal.pose.orientation.z = qz
+            goal.pose.orientation.w = qw
+            self.latest_goal = goal
+            self.goal_pose_publisher_.publish(goal)
             # self.get_logger().info(f'Published target waypoint: x={x}, y={y}, v={v}, tau={tau}, theta={theta}')
         except Exception as e:
             self.get_logger().debug(f'Failed to publish target: {e}')
